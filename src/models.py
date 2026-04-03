@@ -23,6 +23,7 @@ class ROIResult:
     face_detected: bool
     fps: float
     frame_count: int
+    rgb_signals: Optional[List[List[List[float]]]] = None  # shape: [3 ROIs][num_frames][3 channels]
     landmarks_per_frame: Optional[list] = None  # optional, for visualization
 
 
