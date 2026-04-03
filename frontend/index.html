@@ -12,31 +12,173 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- TODO: Build dashboard layout -->
-    <!-- See docs/modules/07_frontend_dashboard.md for design specification -->
-
     <div id="app">
+        <!-- Header -->
         <header id="header">
             <h1>PulseGuard</h1>
             <p class="subtitle">Contact-Free Cardiac Stress Monitor</p>
         </header>
 
         <main id="main-content">
-            <!-- Input section: video upload and webcam toggle -->
-            <section id="input-section">
-                <!-- TODO: File upload area -->
-                <!-- TODO: Webcam capture toggle -->
-            </section>
+            <!-- Top row: Input + BPM -->
+            <div class="top-row">
+                <!-- Input section -->
+                <section id="input-section" class="card">
+                    <div class="input-mode-toggle">
+                        <button id="btn-upload-mode" class="active" type="button">Upload Video</button>
+                        <button id="btn-webcam-mode" type="button">Webcam</button>
+                    </div>
 
-            <!-- Results dashboard -->
+                    <!-- File upload area -->
+                    <div id="upload-section">
+                        <div id="drop-zone" class="drop-zone">
+                            <div class="drop-zone-icon">📁</div>
+                            <p class="drop-zone-text">Drag & drop a video file or <strong>click to browse</strong></p>
+                            <p class="drop-zone-hint">MP4, AVI, or WebM • Max 50 MB</p>
+                            <input type="file" id="file-input" accept="video/*">
+                        </div>
+
+                        <div id="file-info" class="file-info">
+                            <span id="file-name" class="file-name"></span>
+                            <span id="file-size" class="file-size"></span>
+                            <button id="file-remove" class="file-remove" type="button" aria-label="Remove file">✕</button>
+                        </div>
+
+                        <button id="btn-analyze" class="btn-analyze" type="button" disabled>
+                            Analyze Video
+                        </button>
+                    </div>
+
+                    <!-- Webcam capture area -->
+                    <div id="webcam-section" class="webcam-section">
+                        <div class="webcam-preview-container">
+                            <video id="webcam-preview" autoplay muted playsinline></video>
+                            <div id="webcam-countdown" class="webcam-countdown">30s</div>
+                        </div>
+                        <button id="btn-webcam-action" class="btn-webcam" type="button">
+                            Start Recording
+                        </button>
+                    </div>
+
+                    <button id="btn-demo" class="btn-demo" type="button">✨ Load Demo Data</button>
+                </section>
+
+                <!-- BPM display -->
+                <section id="bpm-section" class="card">
+                    <div id="bpm-waiting" class="bpm-waiting">
+                        <div class="bpm-waiting-icon">💓</div>
+                        <p class="bpm-waiting-text">Upload a video to begin analysis</p>
+                    </div>
+
+                    <div id="bpm-display" style="display:none; text-align:center;">
+                        <p class="bpm-label">Heart Rate</p>
+                        <div>
+                            <span id="bpm-value" class="bpm-value">--</span>
+                            <span class="bpm-unit">BPM</span>
+                        </div>
+                        <div class="sqi-indicator">
+                            <span id="sqi-dot" class="sqi-dot"></span>
+                            <span id="sqi-text" class="sqi-text">Signal Quality: --</span>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Warning bar -->
+            <div id="warning-bar" class="warning-bar">
+                <span class="warning-icon">⚠️</span>
+                <div id="warning-messages" class="warning-messages"></div>
+            </div>
+
+            <!-- Results section (hidden until analysis completes) -->
             <section id="results-section">
-                <!-- TODO: BPM display with SQI traffic light -->
-                <!-- TODO: BVP waveform chart -->
-                <!-- TODO: HRV metrics table -->
-                <!-- TODO: Stress classification display -->
-                <!-- TODO: ROI visualization overlay -->
+                <!-- BVP waveform chart -->
+                <div class="card" style="margin-bottom: 24px;">
+                    <p class="chart-label">BVP Waveform</p>
+                    <div class="chart-container">
+                        <canvas id="bvp-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- HRV metrics grid -->
+                <p class="section-title">HRV Metrics</p>
+                <div class="metrics-grid">
+                    <div class="metric-card card">
+                        <span class="metric-name">RMSSD</span>
+                        <div>
+                            <span id="metric-rmssd" class="metric-value muted">--</span>
+                            <span class="metric-unit">ms</span>
+                        </div>
+                    </div>
+                    <div class="metric-card card">
+                        <span class="metric-name">SDNN</span>
+                        <div>
+                            <span id="metric-sdnn" class="metric-value muted">--</span>
+                            <span class="metric-unit">ms</span>
+                        </div>
+                    </div>
+                    <div class="metric-card card">
+                        <span class="metric-name">pNN50</span>
+                        <div>
+                            <span id="metric-pnn50" class="metric-value muted">--</span>
+                            <span class="metric-unit">%</span>
+                        </div>
+                    </div>
+                    <div class="metric-card card">
+                        <span class="metric-name">LF/HF Ratio</span>
+                        <div>
+                            <span id="metric-lfhf" class="metric-value muted">--</span>
+                        </div>
+                    </div>
+                    <div class="metric-card card">
+                        <span class="metric-name">Mean HR</span>
+                        <div>
+                            <span id="metric-meanhr" class="metric-value muted">--</span>
+                            <span class="metric-unit">bpm</span>
+                        </div>
+                    </div>
+
+                    <!-- Stress card embedded in grid -->
+                    <div id="stress-card" class="metric-card card stress-card stress-unknown">
+                        <div class="stress-label">Stress Level</div>
+                        <div id="stress-level" class="stress-level unknown">--</div>
+                        <div id="stress-confidence" class="stress-confidence"></div>
+                    </div>
+                </div>
+
+                <!-- ROI quality visualization -->
+                <p class="section-title">ROI Signal Quality</p>
+                <div class="roi-grid">
+                    <div class="roi-item card">
+                        <span class="roi-label">Forehead</span>
+                        <div class="roi-bar-container">
+                            <div id="roi-bar-forehead" class="roi-bar"></div>
+                        </div>
+                        <span id="roi-score-forehead" class="roi-score">--</span>
+                    </div>
+                    <div class="roi-item card">
+                        <span class="roi-label">Left Cheek</span>
+                        <div class="roi-bar-container">
+                            <div id="roi-bar-left" class="roi-bar"></div>
+                        </div>
+                        <span id="roi-score-left" class="roi-score">--</span>
+                    </div>
+                    <div class="roi-item card">
+                        <span class="roi-label">Right Cheek</span>
+                        <div class="roi-bar-container">
+                            <div id="roi-bar-right" class="roi-bar"></div>
+                        </div>
+                        <span id="roi-score-right" class="roi-score">--</span>
+                    </div>
+                </div>
             </section>
         </main>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p class="loading-text">Analyzing cardiac signals…</p>
     </div>
 
     <script src="app.js"></script>

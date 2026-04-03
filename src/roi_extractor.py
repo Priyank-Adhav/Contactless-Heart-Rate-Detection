@@ -99,7 +99,7 @@ def _create_landmarker(model_path=None, running_mode="IMAGE"):
     options = FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=resolved_path),
         running_mode=mode,
-        num_faces=1,
+        num_faces=3,
         min_face_detection_confidence=0.5,
         min_face_presence_confidence=0.5,
         min_tracking_confidence=0.5,

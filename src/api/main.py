@@ -141,7 +141,8 @@ def run_pipeline(video_path: str) -> dict:
     if hrv_result is not None:
         try:
             from src.stress_classifier import classify_stress
-            stress_level, stress_confidence = classify_stress(hrv_result)
+            stress_level, stress_confidence, stress_warnings = classify_stress(hrv_result)
+            warnings.extend(stress_warnings)
         except ImportError:
             logger.warning("stress_classifier not yet implemented")
             warnings.append("Stress classification module not yet available.")
@@ -166,7 +167,7 @@ def run_pipeline(video_path: str) -> dict:
         warnings.append("Signal quality is moderate. Results may have reduced accuracy.")
 
     return {
-        "bpm": signal_result.bpm,
+        "bpm": round(hrv_result.mean_hr, 1) if hrv_result is not None else signal_result.bpm,
         "sqi_score": signal_result.sqi_score,
         "sqi_level": signal_result.sqi_level,
         "per_roi_sqi": signal_result.per_roi_sqi,

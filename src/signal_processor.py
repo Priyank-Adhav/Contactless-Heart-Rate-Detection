@@ -217,48 +217,41 @@ def chrom_algorithm(rgb_signal: np.ndarray, fps: float,
 
 def extract_bpm(bvp_signal: np.ndarray, fps: float,
                 low_bpm: float = 42, high_bpm: float = 200) -> Optional[float]:
-    """Estimate heart rate from the dominant frequency in the BVP signal.
-
-    How it works:
-        1. Compute the FFT (frequency spectrum) of the BVP signal
-        2. Look only at frequencies corresponding to [42, 200] BPM
-        3. Find the frequency with the highest power
-        4. Convert Hz → BPM (multiply by 60)
-
-    Args:
-        bvp_signal: 1D numpy array of the blood volume pulse signal.
-        fps: Sampling rate in Hz.
-        low_bpm: Minimum plausible heart rate (default 42 BPM).
-        high_bpm: Maximum plausible heart rate (default 200 BPM).
-
-    Returns:
-        Estimated heart rate in BPM, or None if no valid peak found.
-    """
     N = len(bvp_signal)
     if N < 2:
         return None
 
     freqs = np.fft.rfftfreq(N, d=1.0 / fps)
-    spectrum = np.abs(np.fft.rfft(bvp_signal))
+    spectrum = np.abs(np.fft.rfft(bvp_signal)) ** 2  # power spectrum
 
-    # Convert BPM limits to Hz
     low_hz = low_bpm / 60.0
     high_hz = high_bpm / 60.0
     mask = (freqs >= low_hz) & (freqs <= high_hz)
 
     if not np.any(mask):
-        logger.warning("No frequencies in physiological range [%.1f, %.1f] Hz",
-                       low_hz, high_hz)
         return None
 
     valid_freqs = freqs[mask]
     valid_spectrum = spectrum[mask]
-    peak_freq = valid_freqs[np.argmax(valid_spectrum)]
 
-    bpm = peak_freq * 60.0
-    logger.debug("FFT peak at %.3f Hz → %.1f BPM", peak_freq, bpm)
+    # Get top 3 candidate peaks
+    top_indices = np.argsort(valid_spectrum)[-3:][::-1]
+    candidates = [(valid_freqs[i] * 60.0, valid_spectrum[i]) for i in top_indices]
+
+    # Cross-validate with peak detection
+    peaks = detect_peaks(bvp_signal, fps)
+    if len(peaks) >= 2:
+        ibis = np.diff(peaks) / fps
+        peak_bpm = 60.0 / np.mean(ibis)
+        # Pick the FFT candidate closest to peak-derived BPM
+        best = min(candidates, key=lambda c: abs(c[0] - peak_bpm))
+        bpm = best[0]
+    else:
+        # Fall back to strongest FFT peak
+        bpm = candidates[0][0]
+
+    logger.debug("FFT candidates: %s → selected %.1f BPM", candidates, bpm)
     return round(float(bpm), 1)
-
 
 # ---------------------------------------------------------------------------
 # Step 5: Peak Detection for IBI
