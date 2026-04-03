@@ -36,13 +36,18 @@ class MockLandmark:
         self.z = z
 
 
-class MockLandmarks:
-    """Minimal stand-in for MediaPipe face landmarks."""
+class MockLandmarks(list):
+    """Minimal stand-in for MediaPipe face landmarks (tasks API).
+
+    The new tasks API returns landmarks as a list, accessed via
+    landmarks[idx] rather than landmarks.landmark[idx].
+    """
     def __init__(self, points_dict):
         # Build a list of 468 landmarks, defaulting to (0.5, 0.5)
-        self.landmark = [MockLandmark(0.5, 0.5) for _ in range(468)]
+        data = [MockLandmark(0.5, 0.5) for _ in range(468)]
         for idx, (x, y) in points_dict.items():
-            self.landmark[idx] = MockLandmark(x, y)
+            data[idx] = MockLandmark(x, y)
+        super().__init__(data)
 
 
 # --- Tests for _landmarks_to_polygon ---
