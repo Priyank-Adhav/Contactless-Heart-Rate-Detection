@@ -6,8 +6,8 @@ BPM extraction using synthetic signals with known cardiac frequencies.
 """
 
 import numpy as np
-import pytest
-from src.signal_processor import bandpass_filter, pos_algorithm, chrom_algorithm, extract_bpm
+
+from src.signal_processor import bandpass_filter, chrom_algorithm, extract_bpm, pos_algorithm
 
 
 class TestBandpassFilter:

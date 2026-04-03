@@ -7,15 +7,17 @@ video upload analysis and (optionally) live webcam frame processing.
 See docs/modules/06_api_server.md for implementation details.
 """
 
-from fastapi import FastAPI, UploadFile, File
-from fastapi.staticfiles import StaticFiles
-import numpy as np
-from ..models import ROIResult, AnalysisResult
-from ..signal_processor import process_roi_signals
 # Dummy HRV and stress, since not implemented
 # from ..hrv_analyzer import analyze_hrv
 # from ..stress_classifier import classify_stress
 import dataclasses
+
+import numpy as np
+from fastapi import FastAPI, File, UploadFile
+from fastapi.staticfiles import StaticFiles
+
+from ..models import AnalysisResult, ROIResult
+from ..signal_processor import process_roi_signals
 
 app = FastAPI(
     title="PulseGuard API",
@@ -37,7 +39,7 @@ def health_check():
 async def analyze_video(video: UploadFile = File(...)):
     # For now, ignore the video and generate dummy ROI data
     # In full implementation, extract ROIs from video
-    
+
     # Generate dummy green signals: 3 ROIs, 900 samples (30 fps * 30 sec)
     fps = 30
     num_frames = 900
@@ -45,30 +47,30 @@ async def analyze_video(video: UploadFile = File(...)):
     # Simulate cardiac signal at 72 BPM (1.2 Hz)
     t = np.linspace(0, num_frames / fps, num_frames, endpoint=False)
     cardiac_signal = np.sin(2 * np.pi * 1.2 * t) + 0.1 * np.random.randn(num_frames)
-    
+
     green_signals = [
         cardiac_signal.tolist(),
         (cardiac_signal + 0.05 * np.random.randn(num_frames)).tolist(),
         (cardiac_signal + 0.05 * np.random.randn(num_frames)).tolist(),
     ]
-    
+
     roi_result = ROIResult(
         green_signals=green_signals,
         face_detected=True,
         fps=fps,
         frame_count=num_frames,
     )
-    
+
     # Process through signal processor
     signal_result = process_roi_signals(roi_result)
-    
+
     # Dummy HRV (since not implemented)
     hrv_result = None  # For now
-    
+
     # Dummy stress
     stress_level = "MODERATE"
     stress_confidence = 0.75
-    
+
     analysis_result = AnalysisResult(
         signal=signal_result,
         hrv=hrv_result,
@@ -77,7 +79,7 @@ async def analyze_video(video: UploadFile = File(...)):
         processing_time_ms=1500.0,
         warnings=[]
     )
-    
+
     return dataclasses.asdict(analysis_result)
 
 

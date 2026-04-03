@@ -8,9 +8,11 @@ bandpass filtering and signal normalization.
 See docs/modules/02_signal_processing.md for implementation details.
 """
 
-import numpy as np
-from scipy.signal import butter, filtfilt, detrend, find_peaks
 from typing import List, Optional
+
+import numpy as np
+from scipy.signal import butter, detrend, filtfilt, find_peaks
+
 from .models import ROIResult, SignalResult
 
 
