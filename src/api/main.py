@@ -4,10 +4,27 @@ FastAPI application entry point.
 Serves the frontend dashboard and exposes REST endpoints for
 video upload analysis and (optionally) live webcam frame processing.
 
+Pipeline orchestration:
+    1. Accept video file via POST /api/analyze
+    2. Save to a temp file
+    3. Run the full pipeline: ROI -> Signal -> SQI gate -> HRV -> Stress
+    4. Return structured JSON conforming to AnalysisResult schema
+    5. Clean up the temp file
+
 See docs/modules/06_api_server.md for implementation details.
 """
 
-from fastapi import FastAPI
+import logging
+import tempfile
+import time
+from pathlib import Path
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PulseGuard API",
@@ -15,17 +32,278 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS middleware for development (frontend may be on a different port)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- Health check ---
+ALLOWED_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+
+# Upper limit for uploaded video files (50 MB)
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 
 @app.get("/api/health")
 def health_check():
+    """Basic health check endpoint for monitoring and CI."""
     return {"status": "ok"}
 
 
-# TODO: POST /api/analyze - accepts video file, returns AnalysisResult
-# TODO: POST /api/analyze/webcam - accepts base64 frames, returns live results
-# TODO: Mount frontend static files at root
+# ---------------------------------------------------------------------------
+# Pipeline orchestration
+# ---------------------------------------------------------------------------
 
-# Serve frontend files
-# app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+def run_pipeline(video_path: str) -> dict:
+    """Execute the full analysis pipeline on a video file.
+
+    Each pipeline stage is imported lazily so that the server can start
+    even when some modules are not yet implemented. Failures in any
+    stage are caught and reported in the warnings list rather than
+    crashing the entire request.
+
+    Returns a dictionary matching the API response schema.
+    """
+    warnings = []
+
+    # --- Stage 1: ROI extraction ---
+    try:
+        from src.roi_extractor import extract_rois
+        roi_result = extract_rois(video_path)
+    except Exception as e:
+        logger.error("ROI extraction failed: %s", e)
+        return _error_response(
+            warnings=["ROI extraction failed. Ensure the video contains a visible face."],
+            error_detail=str(e),
+        )
+
+    if not roi_result.face_detected:
+        return _error_response(
+            warnings=["No face detected in the video."],
+        )
+
+    # --- Stage 2: Signal processing + ensemble fusion ---
+    try:
+        from src.signal_processor import process_signals
+        signal_result = process_signals(roi_result)
+    except ImportError:
+        logger.warning("signal_processor not yet implemented, using placeholder")
+        signal_result = _placeholder_signal_result(roi_result)
+        warnings.append("Signal processing module not yet available; showing placeholder data.")
+    except Exception as e:
+        logger.error("Signal processing failed: %s", e)
+        return _error_response(
+            warnings=[f"Signal processing failed: {e}"],
+        )
+
+    # --- Stage 3: SQI gate ---
+    if signal_result.sqi_level == "LOW":
+        return {
+            "bpm": None,
+            "sqi_score": signal_result.sqi_score,
+            "sqi_level": signal_result.sqi_level,
+            "per_roi_sqi": signal_result.per_roi_sqi,
+            "bvp_waveform": signal_result.bvp_signal[:500],  # cap for payload size
+            "hrv": None,
+            "stress_level": "UNKNOWN",
+            "stress_confidence": 0.0,
+            "warnings": [
+                "Signal quality insufficient for reliable measurement.",
+                "Ensure adequate lighting and remain still during recording.",
+            ],
+        }
+
+    # --- Stage 4: HRV analysis ---
+    hrv_result = None
+    try:
+        from src.hrv_analyzer import compute_hrv
+        hrv_result = compute_hrv(signal_result.peak_indices, roi_result.fps)
+    except ImportError:
+        logger.warning("hrv_analyzer not yet implemented")
+        warnings.append("HRV analysis module not yet available.")
+    except Exception as e:
+        logger.error("HRV analysis failed: %s", e)
+        warnings.append(f"HRV analysis failed: {e}")
+
+    if hrv_result is None and "HRV analysis module not yet available." not in warnings:
+        warnings.append("Insufficient peaks detected for HRV analysis.")
+
+    # --- Stage 5: Stress classification ---
+    stress_level = "UNKNOWN"
+    stress_confidence = 0.0
+
+    if hrv_result is not None:
+        try:
+            from src.stress_classifier import classify_stress
+            stress_level, stress_confidence = classify_stress(hrv_result)
+        except ImportError:
+            logger.warning("stress_classifier not yet implemented")
+            warnings.append("Stress classification module not yet available.")
+        except Exception as e:
+            logger.error("Stress classification failed: %s", e)
+            warnings.append(f"Stress classification failed: {e}")
+
+    # --- Build HRV dict for response ---
+    hrv_dict = None
+    if hrv_result is not None:
+        hrv_dict = {
+            "rmssd": hrv_result.rmssd,
+            "sdnn": hrv_result.sdnn,
+            "pnn50": hrv_result.pnn50,
+            "lf_hf_ratio": hrv_result.lf_hf_ratio,
+            "mean_hr": hrv_result.mean_hr,
+            "ibi_ms": hrv_result.ibi_ms,
+        }
+
+    # --- SQI level warnings ---
+    if signal_result.sqi_level == "MEDIUM":
+        warnings.append("Signal quality is moderate. Results may have reduced accuracy.")
+
+    return {
+        "bpm": signal_result.bpm,
+        "sqi_score": signal_result.sqi_score,
+        "sqi_level": signal_result.sqi_level,
+        "per_roi_sqi": signal_result.per_roi_sqi,
+        "bvp_waveform": signal_result.bvp_signal[:500],
+        "hrv": hrv_dict,
+        "stress_level": stress_level,
+        "stress_confidence": stress_confidence,
+        "warnings": warnings,
+    }
+
+
+def _error_response(warnings: list, error_detail: str = None) -> dict:
+    """Build a standardized error response for pipeline failures."""
+    return {
+        "bpm": None,
+        "sqi_score": 0.0,
+        "sqi_level": "LOW",
+        "per_roi_sqi": [0.0, 0.0, 0.0],
+        "bvp_waveform": [],
+        "hrv": None,
+        "stress_level": "UNKNOWN",
+        "stress_confidence": 0.0,
+        "warnings": warnings,
+    }
+
+
+def _placeholder_signal_result(roi_result):
+    """Create a placeholder SignalResult when signal_processor is unavailable.
+
+    Uses a simple FFT on the raw green channel to estimate BPM. This is
+    not production quality but allows the API to return something useful
+    while the signal processing module is being developed.
+    """
+    import numpy as np
+
+    from src.models import SignalResult
+
+    # Use the first ROI (forehead) green channel as a rough BVP proxy
+    green = roi_result.green_signals[0]
+    if len(green) < 30:
+        return SignalResult(
+            bvp_signal=green,
+            bpm=None,
+            peak_indices=[],
+            sqi_score=0.1,
+            sqi_level="LOW",
+            per_roi_sqi=[0.1, 0.1, 0.1],
+        )
+
+    arr = np.array(green, dtype=float)
+    # Simple detrend
+    arr = arr - np.mean(arr)
+
+    # Rough BPM from FFT
+    fps = roi_result.fps
+    freqs = np.fft.rfftfreq(len(arr), d=1.0 / fps)
+    spectrum = np.abs(np.fft.rfft(arr))
+    cardiac_mask = (freqs >= 0.7) & (freqs <= 3.5)
+
+    bpm = None
+    if np.any(cardiac_mask):
+        peak_idx = np.argmax(spectrum[cardiac_mask])
+        bpm = float(freqs[cardiac_mask][peak_idx] * 60.0)
+
+    return SignalResult(
+        bvp_signal=arr.tolist()[:500],
+        bpm=bpm,
+        peak_indices=[],
+        sqi_score=0.3,
+        sqi_level="MEDIUM",
+        per_roi_sqi=[0.3, 0.3, 0.3],
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/analyze -- main video upload endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/analyze")
+async def analyze_video(video: UploadFile = File(...)):
+    """Accept a video file upload and run the full analysis pipeline.
+
+    Args:
+        video: Uploaded video file (MP4, WebM, AVI, MOV, MKV).
+
+    Returns:
+        JSON response with BPM, SQI, HRV, stress level, and waveform data.
+    """
+    # Validate file extension
+    if video.filename is None:
+        raise HTTPException(status_code=422, detail="No filename provided.")
+
+    ext = Path(video.filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type: '{ext}'. Accepted formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    # Read and validate file size
+    content = await video.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"File too large ({len(content) / 1024 / 1024:.1f} MB). Maximum: {MAX_FILE_SIZE_BYTES / 1024 / 1024:.0f} MB.",
+        )
+
+    # Save to temp file and run pipeline
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        start_time = time.time()
+        result = run_pipeline(tmp_path)
+        elapsed_ms = (time.time() - start_time) * 1000
+        result["processing_time_ms"] = round(elapsed_ms, 1)
+
+        logger.info(
+            "Analysis complete: bpm=%s, sqi=%s, time=%.0fms",
+            result.get("bpm"), result.get("sqi_level"), elapsed_ms,
+        )
+
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.exception("Unexpected error during analysis")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Serve frontend static files (must be the LAST mount)
+# ---------------------------------------------------------------------------
+
+_frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
+if _frontend_dir.is_dir():
+    app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
