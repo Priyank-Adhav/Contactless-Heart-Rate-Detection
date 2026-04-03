@@ -16,16 +16,15 @@ import numpy as np
 import pytest
 
 from src.roi_extractor import (
-    _landmarks_to_polygon,
-    _extract_roi_channels,
-    _interpolate_gaps,
-    _interpolate_rgb_gaps,
     FOREHEAD_INDICES,
     LEFT_CHEEK_INDICES,
     RIGHT_CHEEK_INDICES,
     ROI_DEFINITIONS,
+    _extract_roi_channels,
+    _interpolate_gaps,
+    _interpolate_rgb_gaps,
+    _landmarks_to_polygon,
 )
-
 
 # --- Helpers for creating mock landmark objects ---
 
@@ -237,7 +236,6 @@ class TestExtractRoisFromVideo:
     )
     def test_returns_valid_roi_result(self):
         """extract_rois should return a well-formed ROIResult on a real video."""
-        from src.roi_extractor import extract_rois
         # result = extract_rois("tests/fixtures/clean_face_30s.mp4")
         # assert result.face_detected is True
         # assert len(result.green_signals) == 3

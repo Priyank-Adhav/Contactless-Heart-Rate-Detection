@@ -440,7 +440,6 @@ def extract_rois_webcam(
 
             if show_preview:
                 preview = frame.copy()
-                face_landmarks = None  # We use lm_coords directly
                 for j, (_, idx_list) in enumerate(ROI_DEFINITIONS):
                     # Reconstruct polygon from stored coordinates
                     points = []
