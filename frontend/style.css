@@ -1,0 +1,56 @@
+/*
+ * PulseGuard Dashboard Styles
+ *
+ * Design system: dark theme, glassmorphism panels, Inter font family.
+ * See docs/modules/07_frontend_dashboard.md for the full design spec.
+ */
+
+/* ---- Design tokens ---- */
+
+:root {
+    --color-bg: #0a0e1a;
+    --color-surface: rgba(255, 255, 255, 0.04);
+    --color-surface-hover: rgba(255, 255, 255, 0.07);
+    --color-border: rgba(255, 255, 255, 0.08);
+    --color-text-primary: #e8eaed;
+    --color-text-secondary: #9aa0a6;
+    --color-text-muted: #5f6368;
+
+    --color-accent: #6c9cfc;
+    --color-accent-glow: rgba(108, 156, 252, 0.15);
+
+    --color-sqi-high: #34d399;
+    --color-sqi-medium: #fbbf24;
+    --color-sqi-low: #f87171;
+
+    --color-stress-low: #34d399;
+    --color-stress-moderate: #fbbf24;
+    --color-stress-high: #f87171;
+
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+
+    --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+    --transition-base: 200ms ease;
+}
+
+/* ---- Reset and base ---- */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--font-family);
+    background-color: var(--color-bg);
+    color: var(--color-text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* TODO: Component styles - see frontend design doc */

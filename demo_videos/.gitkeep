@@ -1,0 +1,3 @@
+# This directory holds pre-recorded demo videos.
+# Video files are excluded from git via .gitignore.
+# Place test and demo clips here during development.

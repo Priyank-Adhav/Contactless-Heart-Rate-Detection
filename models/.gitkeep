@@ -1,0 +1,2 @@
+# Serialized model files (Random Forest, etc.)
+# Model files (.joblib, .pkl) are excluded from git via .gitignore.
