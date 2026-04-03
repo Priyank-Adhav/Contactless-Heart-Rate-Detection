@@ -12,13 +12,12 @@ Tests are organized by endpoint and cover:
 """
 
 import io
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.main import app, run_pipeline, _error_response
-from src.models import SignalResult, HRVResult
+from src.api.main import _error_response, app, run_pipeline
 
 
 @pytest.fixture

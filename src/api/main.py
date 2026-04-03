@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -201,6 +201,7 @@ def _placeholder_signal_result(roi_result):
     while the signal processing module is being developed.
     """
     import numpy as np
+
     from src.models import SignalResult
 
     # Use the first ROI (forehead) green channel as a rough BVP proxy
