@@ -23,6 +23,12 @@ let recordedChunks = [];
 let countdownInterval = null;
 let isRecording = false;
 
+// Live WebSocket Processing State
+let liveSocket = null;
+let frameExtractInterval = null;
+const extractionCanvas = document.createElement("canvas");
+const extractionCtx = extractionCanvas.getContext("2d", { willReadFrequently: true });
+
 // MediaPipe variables
 let faceLandmarker = null;
 let lastVideoTime = -1;
@@ -440,22 +446,68 @@ dom.btnWebcamAction.addEventListener("click", () => {
 function startRecording(durationSeconds) {
     if (!webcamStream) return;
 
-    recordedChunks = [];
-    mediaRecorder = new MediaRecorder(webcamStream, { mimeType: "video/webm" });
-    mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) recordedChunks.push(e.data);
+    // Connect WebSocket
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/live`;
+
+    liveSocket = new WebSocket(wsUrl);
+
+    liveSocket.onopen = () => {
+        console.log("Live processing WebSocket connected.");
+
+        // Match canvas to video stream resolution
+        const videoTrack = webcamStream.getVideoTracks()[0];
+        const settings = videoTrack.getSettings();
+        extractionCanvas.width = settings.width || 640;
+        extractionCanvas.height = settings.height || 480;
+
+        // Extract and send frames at ~10 FPS (100ms interval)
+        // MediaPipe on Python is heavy; 30fps creates a huge queue backlog.
+        // 10 FPS still exceeds the Nyquist rate for cardiac frequencies.
+        frameExtractInterval = setInterval(() => {
+            if (liveSocket.readyState === WebSocket.OPEN) {
+                extractionCtx.drawImage(dom.webcamPreview, 0, 0, extractionCanvas.width, extractionCanvas.height);
+                const frameData = extractionCanvas.toDataURL("image/jpeg", 0.5);
+                liveSocket.send(JSON.stringify({ frame: frameData }));
+            }
+        }, 100);
     };
 
-    mediaRecorder.onstop = async () => {
-        const blob = new Blob(recordedChunks, { type: "video/webm" });
-        const file = new File([blob], "webcam-capture.webm", { type: "video/webm" });
-        await runAnalysis(file);
+    liveSocket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            // Live-update the dashboard
+            renderResults(data);
+
+            if (data.is_final) {
+                liveSocket.close();
+                showLoading(false);
+            }
+        } catch (e) {
+            console.error("Error parsing live data", e);
+        }
     };
 
-    mediaRecorder.start();
+    liveSocket.onerror = (error) => {
+        console.error("Live processing WebSocket error:", error);
+        showError("Live connection error.");
+        stopRecording();
+    };
+
+    liveSocket.onclose = () => {
+        console.log("Live stream closed.");
+        if (frameExtractInterval) {
+            clearInterval(frameExtractInterval);
+            frameExtractInterval = null;
+        }
+    };
+
     isRecording = true;
     dom.btnWebcamAction.textContent = "Stop Recording";
     dom.btnWebcamAction.classList.add("recording");
+
+    // UI clean state
+    hideWarnings();
 
     // Countdown
     let remaining = durationSeconds;
@@ -467,6 +519,7 @@ function startRecording(durationSeconds) {
         dom.webcamCountdown.textContent = remaining + "s";
         if (remaining <= 0) {
             stopRecording();
+            showLoading(true);
         }
     }, 1000);
 }
@@ -480,10 +533,18 @@ function stopRecording() {
     dom.btnWebcamAction.textContent = "Start Recording";
     dom.btnWebcamAction.classList.remove("recording");
 
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-    }
     isRecording = false;
+
+    if (frameExtractInterval) {
+        clearInterval(frameExtractInterval);
+        frameExtractInterval = null;
+    }
+
+    if (liveSocket && liveSocket.readyState === WebSocket.OPEN) {
+        liveSocket.send(JSON.stringify({ action: "stop" }));
+        showLoading(true);
+        // Server will send final result then close
+    }
 }
 
 /* ============================================================
