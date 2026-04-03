@@ -372,6 +372,33 @@ def extract_rois(video_path, model_path=None):
     )
 
 
+def _check_face_alignment(lm_coords, frame_w, frame_h, cx, cy, radius):
+    """Check if the face bounding box fits securely within the guide circle."""
+    xs = [lm[0] * frame_w for lm in lm_coords]
+    ys = [lm[1] * frame_h for lm in lm_coords]
+    
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    
+    # Face bounding box center
+    face_cx, face_cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+    
+    # Check if face center is relatively close to circle center
+    dist_sq = (face_cx - cx) ** 2 + (face_cy - cy) ** 2
+    if dist_sq > (radius * 0.5) ** 2:
+        return False, "Please center your face"
+        
+    # Check if face bounding box fits inside the circle roughly
+    if min_x < cx - radius or max_x > cx + radius or min_y < cy - radius or max_y > cy + radius:
+        return False, "Move back, face too large"
+        
+    face_width = max_x - min_x
+    if face_width < radius * 0.6:
+        return False, "Move closer"
+        
+    return True, "Perfect! Hold still..."
+
+
 def extract_rois_webcam(
     duration_seconds: int = 30,
     camera_index: int = 0,
@@ -380,9 +407,9 @@ def extract_rois_webcam(
 ) -> ROIResult:
     """Capture video from a webcam and extract multi-ROI signals.
 
-    Opens the specified camera, captures frames for the given duration,
-    and processes them identically to extract_rois. Optionally displays
-    a live preview window so the user can position their face.
+    Opens the specified camera, initially runs an ALIGNMENT logic flow 
+    which ensures the patient face fits perfectly within a visual guide,
+    and then captures frames for the given duration while verifying they do not step out.
 
     Args:
         duration_seconds: How many seconds to record. Default 30.
@@ -391,7 +418,7 @@ def extract_rois_webcam(
         model_path: Optional path to the face_landmarker.task file.
 
     Returns:
-        ROIResult with extracted signals.
+        ROIResult with extracted signals and metadata.
     """
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
@@ -403,27 +430,32 @@ def extract_rois_webcam(
 
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    cx, cy = frame_w // 2, frame_h // 2
+    radius = int(min(frame_w, frame_h) * 0.35)
 
     landmarker = _create_landmarker(model_path, running_mode="VIDEO")
 
     green_buffers = [[] for _ in ROI_DEFINITIONS]
     rgb_buffers = [[] for _ in ROI_DEFINITIONS]
     landmarks_list = []
+    
     frame_count = 0
     face_frame_count = 0
+    recorded_frames = 0
 
     roi_colors = [(0, 220, 120), (220, 160, 0), (0, 160, 220)]
-    start_time = time.time()
+    
+    phase = "ALIGNING"
+    patient_moved = False
+    start_time = None
 
     while True:
-        elapsed = time.time() - start_time
-        if elapsed >= duration_seconds:
-            break
-
         ret, frame = cap.read()
         if not ret:
             continue
 
+        # In order to let mediapipe deal with timeline, we use arbitrary timestamp matching the read
         timestamp_ms = (frame_count / fps) * 1000.0
         frame_count += 1
 
@@ -431,60 +463,86 @@ def extract_rois_webcam(
             landmarker, frame, frame_w, frame_h, timestamp_ms=timestamp_ms
         )
 
-        if green_vals is not None:
-            face_frame_count += 1
-            landmarks_list.append(lm_coords)
-            for i in range(len(ROI_DEFINITIONS)):
-                green_buffers[i].append(green_vals[i])
-                rgb_buffers[i].append(rgb_vals[i])
+        preview = frame.copy() if show_preview else None
+        is_aligned = False
+        align_msg = "No face detected"
 
+        if lm_coords is not None:
+            is_aligned, align_msg = _check_face_alignment(lm_coords, frame_w, frame_h, cx, cy, radius)
+
+        if phase == "ALIGNING":
             if show_preview:
-                preview = frame.copy()
-                for j, (_, idx_list) in enumerate(ROI_DEFINITIONS):
-                    # Reconstruct polygon from stored coordinates
-                    points = []
-                    for idx in idx_list:
-                        x = int(np.clip(lm_coords[idx][0] * frame_w, 0, frame_w - 1))
-                        y = int(np.clip(lm_coords[idx][1] * frame_h, 0, frame_h - 1))
-                        points.append([x, y])
-                    poly = np.array(points, dtype=np.int32)
+                color = (0, 255, 0) if is_aligned else (0, 0, 255) # Green if aligned, Red out of bounds
+                # Draw dark mask cleanly
+                mask = np.zeros_like(preview)
+                cv2.circle(mask, (cx, cy), radius, (255, 255, 255), -1)
+                # Invert mask heavily to blacken sides
+                preview_dim = cv2.bitwise_and(preview, mask)
+                preview = cv2.addWeighted(preview, 0.3, preview_dim, 0.7, 0)
+                
+                cv2.circle(preview, (cx, cy), radius, color, 3)
+                cv2.putText(preview, align_msg, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                cv2.putText(preview, "ALIGNMENT PHASE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            if is_aligned:
+                phase = "RECORDING"
+                start_time = time.time()
+                face_frame_count = 0
+                recorded_frames = 0
+                green_buffers = [[] for _ in ROI_DEFINITIONS]
+                rgb_buffers = [[] for _ in ROI_DEFINITIONS]
+                landmarks_list = []
 
-                    overlay = preview.copy()
-                    cv2.fillPoly(overlay, [poly], roi_colors[j])
-                    cv2.addWeighted(overlay, 0.2, preview, 0.8, 0, preview)
-                    cv2.polylines(preview, [poly], True, roi_colors[j], 2)
-
+        elif phase == "RECORDING":
+            elapsed = time.time() - start_time
+            if elapsed >= duration_seconds:
+                break
+                
+            recorded_frames += 1
+            if lm_coords is None or not is_aligned:
+                patient_moved = True
+                
+            if green_vals is not None:
+                face_frame_count += 1
+                landmarks_list.append(lm_coords)
+                for i in range(len(ROI_DEFINITIONS)):
+                    green_buffers[i].append(green_vals[i])
+                    rgb_buffers[i].append(rgb_vals[i])
+            else:
+                landmarks_list.append(None)
+                for i in range(len(ROI_DEFINITIONS)):
+                    green_buffers[i].append(None)
+                    rgb_buffers[i].append(None)
+                    
+            if show_preview:
+                color = (0, 255, 0) if is_aligned else (0, 165, 255) # Orange warning if stepping out
+                cv2.circle(preview, (cx, cy), radius, color, 2)
+                
+                if green_vals is not None:
+                    for j, (_, idx_list) in enumerate(ROI_DEFINITIONS):
+                        points = []
+                        for idx in idx_list:
+                            x = int(np.clip(lm_coords[idx][0] * frame_w, 0, frame_w - 1))
+                            y = int(np.clip(lm_coords[idx][1] * frame_h, 0, frame_h - 1))
+                            points.append([x, y])
+                        poly = np.array(points, dtype=np.int32)
+                        overlay = preview.copy()
+                        cv2.fillPoly(overlay, [poly], roi_colors[j])
+                        cv2.addWeighted(overlay, 0.2, preview, 0.8, 0, preview)
+                        cv2.polylines(preview, [poly], True, roi_colors[j], 2)
+                        
                 remaining = max(0, duration_seconds - elapsed)
-                cv2.putText(
-                    preview,
-                    f"Recording: {remaining:.1f}s remaining",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                )
-                cv2.imshow("PulseGuard - Webcam Capture", preview)
-        else:
-            landmarks_list.append(None)
-            for i in range(len(ROI_DEFINITIONS)):
-                green_buffers[i].append(None)
-                rgb_buffers[i].append(None)
-
-            if show_preview:
-                preview = frame.copy()
-                cv2.putText(
-                    preview,
-                    "No face detected - adjust position",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
-                )
-                cv2.imshow("PulseGuard - Webcam Capture", preview)
+                if not is_aligned:
+                    cv2.putText(preview, "WARNING: For accurate results please stay in frame!", 
+                                (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                
+                cv2.putText(preview, "Analysis in process, please do not move for 30 sec", 
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(preview, f"Time: {remaining:.1f}s", 
+                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         if show_preview:
+            cv2.imshow("PulseGuard - Webcam Capture", preview)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -492,40 +550,43 @@ def extract_rois_webcam(
     landmarker.close()
     if show_preview:
         cv2.destroyAllWindows()
+        
+    warnings = []
+    if patient_moved:
+        warnings.append("During analysis patient movements out of circle observed, we recommend testing again to get accurate outcome")
 
-    if frame_count == 0 or face_frame_count == 0:
+    if recorded_frames == 0 or face_frame_count == 0:
         return ROIResult(
             green_signals=[[], [], []],
             face_detected=False,
             fps=fps,
-            frame_count=frame_count,
+            frame_count=recorded_frames,
             rgb_signals=[[], [], []],
             landmarks_per_frame=[],
+            warnings=warnings
         )
 
-    detection_ratio = face_frame_count / frame_count
+    detection_ratio = face_frame_count / recorded_frames
     if detection_ratio < 0.3:
         return ROIResult(
             green_signals=[[], [], []],
             face_detected=False,
             fps=fps,
-            frame_count=frame_count,
+            frame_count=recorded_frames,
             rgb_signals=[[], [], []],
             landmarks_per_frame=landmarks_list,
+            warnings=warnings
         )
 
-    green_signals = [
-        _interpolate_gaps(buf, max_gap=5) for buf in green_buffers
-    ]
-    rgb_signals = [
-        _interpolate_rgb_gaps(buf, max_gap=5) for buf in rgb_buffers
-    ]
+    green_signals = [_interpolate_gaps(buf, max_gap=5) for buf in green_buffers]
+    rgb_signals = [_interpolate_rgb_gaps(buf, max_gap=5) for buf in rgb_buffers]
 
     return ROIResult(
         green_signals=green_signals,
         face_detected=True,
         fps=fps,
-        frame_count=frame_count,
+        frame_count=recorded_frames,
         rgb_signals=rgb_signals,
         landmarks_per_frame=landmarks_list,
+        warnings=warnings
     )

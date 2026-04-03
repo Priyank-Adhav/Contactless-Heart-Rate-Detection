@@ -140,7 +140,7 @@ def run_live_preview(camera_index=0):
         if key == ord("q"):
             break
         elif key == ord("r"):
-            print("\n\nStarting 10-second recording...")
+            print("\n\nStarting 30-second recording...")
             cap.release()
             landmarker.close()
             cv2.destroyAllWindows()
@@ -153,7 +153,7 @@ def run_live_preview(camera_index=0):
     cv2.destroyAllWindows()
 
 
-def run_recording(camera_index=0, duration=10):
+def run_recording(camera_index=0, duration=30):
     """Run a timed recording and display signal statistics."""
     print(f"Recording {duration} seconds from camera {camera_index}...")
     print()
@@ -171,6 +171,12 @@ def run_recording(camera_index=0, duration=10):
     print(f"  Face detected:   {result.face_detected}")
     print(f"  FPS:             {result.fps:.1f}")
     print(f"  Total frames:    {result.frame_count}")
+    
+    if hasattr(result, "warnings") and result.warnings:
+        print()
+        print("  WARNINGS OBSERVED:")
+        for w in result.warnings:
+            print(f"  ! {w}")
     print()
 
     if not result.face_detected:
@@ -240,11 +246,11 @@ def main():
         help="Camera index (default: 0)"
     )
     parser.add_argument(
-        "--duration", type=int, default=10,
-        help="Recording duration in seconds for direct record mode (default: 10)"
+        "--duration", type=int, default=30,
+        help="Recording duration in seconds for direct record mode (default: 30)"
     )
     parser.add_argument(
-        "--record", action="store_true",
+        "-r", "--record", action="store_true",
         help="Skip preview, go straight to recording"
     )
     args = parser.parse_args()

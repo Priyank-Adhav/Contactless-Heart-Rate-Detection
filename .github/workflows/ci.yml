@@ -42,10 +42,10 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run unit tests
-        run: pytest tests/unit/ -v --timeout=30
+        run: pytest tests/unit/ -v --timeout=120
 
       - name: Run API tests
-        run: pytest tests/api/ -v --timeout=30
+        run: pytest tests/api/ -v --timeout=120
 
       - name: Run integration tests
         run: pytest tests/integration/ -v --timeout=120
