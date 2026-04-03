@@ -297,6 +297,8 @@ def extract_rois(video_path, model_path=None):
 
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cx, cy = frame_w // 2, frame_h // 2
+    radius = int(min(frame_w, frame_h) * 0.35)
 
     landmarker = _create_landmarker(model_path, running_mode="VIDEO")
 
@@ -305,6 +307,7 @@ def extract_rois(video_path, model_path=None):
     landmarks_list = []
     frame_count = 0
     face_frame_count = 0
+    patient_moved = False
 
     while True:
         ret, frame = cap.read()
@@ -321,6 +324,9 @@ def extract_rois(video_path, model_path=None):
         if green_vals is not None:
             face_frame_count += 1
             landmarks_list.append(lm_coords)
+            is_aligned, _ = _check_face_alignment(lm_coords, frame_w, frame_h, cx, cy, radius)
+            if not is_aligned:
+                patient_moved = True
             for i in range(len(ROI_DEFINITIONS)):
                 green_buffers[i].append(green_vals[i])
                 rgb_buffers[i].append(rgb_vals[i])
@@ -333,6 +339,10 @@ def extract_rois(video_path, model_path=None):
     cap.release()
     landmarker.close()
 
+    warnings = []
+    if patient_moved:
+        warnings.append("During analysis patient movements out of circle observed, we recommend testing again to get accurate outcome")
+
     if frame_count == 0 or face_frame_count == 0:
         return ROIResult(
             green_signals=[[], [], []],
@@ -341,6 +351,7 @@ def extract_rois(video_path, model_path=None):
             frame_count=frame_count,
             rgb_signals=[[], [], []],
             landmarks_per_frame=[],
+            warnings=warnings,
         )
 
     detection_ratio = face_frame_count / frame_count
@@ -353,6 +364,7 @@ def extract_rois(video_path, model_path=None):
             frame_count=frame_count,
             rgb_signals=[[], [], []],
             landmarks_per_frame=landmarks_list,
+            warnings=warnings,
         )
 
     green_signals = [
@@ -369,6 +381,7 @@ def extract_rois(video_path, model_path=None):
         frame_count=frame_count,
         rgb_signals=rgb_signals,
         landmarks_per_frame=landmarks_list,
+        warnings=warnings,
     )
 
 

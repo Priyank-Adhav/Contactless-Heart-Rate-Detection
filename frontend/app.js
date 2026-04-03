@@ -23,6 +23,13 @@ let recordedChunks = [];
 let countdownInterval = null;
 let isRecording = false;
 
+// MediaPipe variables
+let faceLandmarker = null;
+let lastVideoTime = -1;
+let animationFrameId = null;
+let isAligned = false;
+let maskCanvasCtx = null;
+
 /* ============================================================
    DOM references
    ============================================================ */
@@ -43,10 +50,13 @@ const dom = {
     fileName: $("file-name"),
     fileSize: $("file-size"),
     fileRemove: $("file-remove"),
+    uploadPreview: $("upload-preview"),
+    uploadCanvas: $("upload-canvas"),
     btnAnalyze: $("btn-analyze"),
 
     // Webcam
     webcamPreview: $("webcam-preview"),
+    webcamCanvas: $("webcam-canvas"),
     webcamCountdown: $("webcam-countdown"),
     btnWebcamAction: $("btn-webcam-action"),
 
@@ -153,6 +163,40 @@ function setSelectedFile(file) {
     dom.fileInfo.classList.add("visible");
     dom.dropZone.style.display = "none";
     dom.btnAnalyze.disabled = false;
+    
+    // Setup preview
+    const objectURL = URL.createObjectURL(file);
+    dom.uploadPreview.src = objectURL;
+    dom.uploadPreview.onloadedmetadata = () => {
+        dom.uploadCanvas.width = dom.uploadPreview.clientWidth;
+        dom.uploadCanvas.height = dom.uploadPreview.clientHeight;
+        
+        const ctx = dom.uploadCanvas.getContext("2d");
+        const w = dom.uploadCanvas.width;
+        const h = dom.uploadCanvas.height;
+        const cx = w / 2;
+        const cy = h / 2;
+        const radius = Math.min(w, h) * 0.35;
+        
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = "source-over";
+        
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = "#8bb4fd";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Let it play silently in background
+        dom.uploadPreview.play();
+    };
 }
 
 function clearSelectedFile() {
@@ -161,6 +205,11 @@ function clearSelectedFile() {
     dom.fileInfo.classList.remove("visible");
     dom.dropZone.style.display = "";
     dom.btnAnalyze.disabled = true;
+    
+    if (dom.uploadPreview.src) {
+        URL.revokeObjectURL(dom.uploadPreview.src);
+        dom.uploadPreview.src = "";
+    }
 }
 
 function formatFileSize(bytes) {
@@ -234,7 +283,7 @@ async function analyzeVideo(file) {
 
 async function startWebcamPreview() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showError("Webcam requires HTTPS or localhost. Serve via FastAPI or use a secure connection.");
+        showError("Webcam disabled by browser security. You MUST use exactly http://localhost:8080 or http://127.0.0.1:8080. If you clicked http://0.0.0.0:8080 from the terminal, the browser blocks the camera!");
         return;
     }
     try {
@@ -243,12 +292,135 @@ async function startWebcamPreview() {
         });
         dom.webcamPreview.srcObject = webcamStream;
         await dom.webcamPreview.play();
+
+        dom.webcamCanvas.width = dom.webcamPreview.clientWidth;
+        dom.webcamCanvas.height = dom.webcamPreview.clientHeight;
+        maskCanvasCtx = dom.webcamCanvas.getContext("2d");
+
+        if (!faceLandmarker) {
+            showLoading(true);
+            try {
+                const { FaceLandmarker, FilesetResolver } = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3");
+                const filesetResolver = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+                );
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+            } catch (e) {
+                console.error("MediaPipe load error:", e);
+                showError("Failed to load Face Landmarker API. The app will work but without the interactive guide.");
+            }
+            showLoading(false);
+        }
+
+        lastVideoTime = -1;
+        predictWebcam();
+
     } catch (err) {
         showError("Could not access webcam: " + err.message);
     }
 }
 
+async function predictWebcam() {
+    if (!faceLandmarker || !webcamStream) return;
+    
+    if (dom.webcamCanvas.width !== dom.webcamPreview.clientWidth) {
+        dom.webcamCanvas.width = dom.webcamPreview.clientWidth;
+        dom.webcamCanvas.height = dom.webcamPreview.clientHeight;
+    }
+
+    let startTimeMs = performance.now();
+    if (lastVideoTime !== dom.webcamPreview.currentTime) {
+        lastVideoTime = dom.webcamPreview.currentTime;
+        const results = faceLandmarker.detectForVideo(dom.webcamPreview, startTimeMs);
+        drawAlignmentGuide(results);
+    }
+
+    if (webcamStream) {
+        animationFrameId = requestAnimationFrame(predictWebcam);
+    }
+}
+
+function drawAlignmentGuide(results) {
+    const ctx = maskCanvasCtx;
+    if (!ctx) return;
+    
+    const w = dom.webcamCanvas.width;
+    const h = dom.webcamCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+    
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.35;
+    
+    isAligned = false;
+    let alignMsg = "No face detected";
+    
+    if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const landmarks = results.faceLandmarks[0];
+        const xs = landmarks.map(lm => lm.x * w);
+        const ys = landmarks.map(lm => lm.y * h);
+        
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        const faceW = maxX - minX;
+        
+        const faceCx = (minX + maxX) / 2;
+        const faceCy = (minY + maxY) / 2;
+        
+        const distSq = Math.pow(faceCx - cx, 2) + Math.pow(faceCy - cy, 2);
+        
+        if (distSq > Math.pow(radius * 0.5, 2)) {
+            alignMsg = "Please center your face";
+        } else if (minX < cx - radius || maxX > cx + radius || minY < cy - radius || maxY > cy + radius) {
+            alignMsg = "Move back, face too large";
+        } else if (faceW < radius * 0.6) {
+            alignMsg = "Move closer";
+        } else {
+            alignMsg = "Perfect! Hold still...";
+            isAligned = true;
+        }
+    }
+    
+    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillRect(0, 0, w, h);
+    
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    
+    const color = isAligned ? "#34d399" : "#f87171";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    
+    ctx.fillStyle = color;
+    ctx.font = "bold 16px Inter, sans-serif";
+    ctx.fillText(isRecording ? "RECORDING: Please do not move" : alignMsg, 20, 40);
+    
+    if (!isRecording) {
+        dom.btnWebcamAction.disabled = !isAligned;
+    }
+}
+
 function stopWebcam() {
+    if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+    if (maskCanvasCtx) {
+        maskCanvasCtx.clearRect(0, 0, dom.webcamCanvas.width, dom.webcamCanvas.height);
+    }
     if (webcamStream) {
         webcamStream.getTracks().forEach((t) => t.stop());
         webcamStream = null;

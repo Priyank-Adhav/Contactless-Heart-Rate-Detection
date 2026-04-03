@@ -39,9 +39,15 @@
                         </div>
 
                         <div id="file-info" class="file-info">
-                            <span id="file-name" class="file-name"></span>
-                            <span id="file-size" class="file-size"></span>
-                            <button id="file-remove" class="file-remove" type="button" aria-label="Remove file">✕</button>
+                            <div class="webcam-preview-container" style="margin-bottom: 12px; width: 100%;">
+                                <video id="upload-preview" muted playsinline loop style="width: 100%; height: 100%; object-fit: cover;"></video>
+                                <canvas id="upload-canvas" class="webcam-canvas"></canvas>
+                            </div>
+                            <div style="display: flex; gap: 12px; align-items: center; width: 100%;">
+                                <span id="file-name" class="file-name"></span>
+                                <span id="file-size" class="file-size"></span>
+                                <button id="file-remove" class="file-remove" type="button" aria-label="Remove file">✕</button>
+                            </div>
                         </div>
 
                         <button id="btn-analyze" class="btn-analyze" type="button" disabled>
@@ -53,9 +59,10 @@
                     <div id="webcam-section" class="webcam-section">
                         <div class="webcam-preview-container">
                             <video id="webcam-preview" autoplay muted playsinline></video>
+                            <canvas id="webcam-canvas" class="webcam-canvas"></canvas>
                             <div id="webcam-countdown" class="webcam-countdown">30s</div>
                         </div>
-                        <button id="btn-webcam-action" class="btn-webcam" type="button">
+                        <button id="btn-webcam-action" class="btn-webcam" type="button" disabled>
                             Start Recording
                         </button>
                     </div>
