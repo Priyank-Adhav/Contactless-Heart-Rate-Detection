@@ -41,10 +41,11 @@ export default function CameraScreen({ navigation, route }) {
     if (faceStatus === 'detected') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } else if (faceStatus === 'lost' && recording) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Vibration.vibrate([0, 100, 50, 100]); // double buzz
+      // Much more aggressive haptic and vibration setting
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Vibration.vibrate([0, 400, 200, 400, 200, 400]); // triple heavy buzz
     }
-  }, [faceStatus]);
+  }, [faceStatus, recording]);
 
   if (!permission) return <View style={styles.center} />;
 
