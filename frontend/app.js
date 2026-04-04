@@ -36,6 +36,28 @@ let animationFrameId = null;
 let isAligned = false;
 let maskCanvasCtx = null;
 
+// ROI landmark index groups — must match ROI_DEFINITIONS in src/roi_extractor.py
+const ROI_DEFINITIONS = [
+    {
+        name: "Forehead",
+        indices: [21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 301, 293, 334, 296, 336, 9, 107, 66, 105, 63],
+        color: "rgba(0, 220, 120, 0.2)",
+        stroke: "#55d0996c"
+    },
+    {
+        name: "Left cheek",
+        indices: [43, 204, 211, 170, 150, 136, 172, 58, 215, 177, 93, 137, 234, 227, 116, 111, 118, 119, 36, 203, 206, 92, 186, 57],
+        color: "rgba(220, 160, 0, 0.2)",
+        stroke: "#c99c215f"
+    },
+    {
+        name: "Right cheek",
+        indices: [422, 430, 394, 365, 397, 367, 435, 361, 401, 323, 366, 454, 447, 345, 372, 265, 261, 448, 449, 450, 329, 371, 266, 423, 426, 436, 287, 432],
+        color: "rgba(0, 160, 220, 0.2)",
+        stroke: "#2491b85a"
+    }
+];
+
 /* ============================================================
    DOM references
    ============================================================ */
@@ -169,37 +191,37 @@ function setSelectedFile(file) {
     dom.fileInfo.classList.add("visible");
     dom.dropZone.style.display = "none";
     dom.btnAnalyze.disabled = false;
-    
+
     // Setup preview
     const objectURL = URL.createObjectURL(file);
     dom.uploadPreview.src = objectURL;
     dom.uploadPreview.onloadedmetadata = () => {
         dom.uploadCanvas.width = dom.uploadPreview.clientWidth;
         dom.uploadCanvas.height = dom.uploadPreview.clientHeight;
-        
+
         const ctx = dom.uploadCanvas.getContext("2d");
         const w = dom.uploadCanvas.width;
         const h = dom.uploadCanvas.height;
         const cx = w / 2;
         const cy = h / 2;
         const radius = Math.min(w, h) * 0.35;
-        
+
         ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
         ctx.fillRect(0, 0, w, h);
-        
+
         ctx.globalCompositeOperation = "destination-out";
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = "source-over";
-        
+
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.strokeStyle = "#8bb4fd";
         ctx.lineWidth = 3;
         ctx.stroke();
-        
+
         // Let it play silently in background
         dom.uploadPreview.play();
     };
@@ -211,7 +233,7 @@ function clearSelectedFile() {
     dom.fileInfo.classList.remove("visible");
     dom.dropZone.style.display = "";
     dom.btnAnalyze.disabled = true;
-    
+
     if (dom.uploadPreview.src) {
         URL.revokeObjectURL(dom.uploadPreview.src);
         dom.uploadPreview.src = "";
@@ -335,7 +357,7 @@ async function startWebcamPreview() {
 
 async function predictWebcam() {
     if (!faceLandmarker || !webcamStream) return;
-    
+
     if (dom.webcamCanvas.width !== dom.webcamPreview.clientWidth) {
         dom.webcamCanvas.width = dom.webcamPreview.clientWidth;
         dom.webcamCanvas.height = dom.webcamPreview.clientHeight;
@@ -356,32 +378,40 @@ async function predictWebcam() {
 function drawAlignmentGuide(results) {
     const ctx = maskCanvasCtx;
     if (!ctx) return;
-    
+
     const w = dom.webcamCanvas.width;
     const h = dom.webcamCanvas.height;
     ctx.clearRect(0, 0, w, h);
-    
+
     const cx = w / 2;
     const cy = h / 2;
     const radius = Math.min(w, h) * 0.35;
-    
+
+    // --- 1. Vignette + face cutout FIRST ---
+    ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";  // restore before drawing anything else
+
+    // --- 2. Now detect alignment ---
     isAligned = false;
     let alignMsg = "No face detected";
-    
+
     if (results.faceLandmarks && results.faceLandmarks.length > 0) {
         const landmarks = results.faceLandmarks[0];
         const xs = landmarks.map(lm => lm.x * w);
         const ys = landmarks.map(lm => lm.y * h);
-        
+
         const minX = Math.min(...xs), maxX = Math.max(...xs);
         const minY = Math.min(...ys), maxY = Math.max(...ys);
         const faceW = maxX - minX;
-        
         const faceCx = (minX + maxX) / 2;
         const faceCy = (minY + maxY) / 2;
-        
         const distSq = Math.pow(faceCx - cx, 2) + Math.pow(faceCy - cy, 2);
-        
+
         if (distSq > Math.pow(radius * 0.5, 2)) {
             alignMsg = "Please center your face";
         } else if (minX < cx - radius || maxX > cx + radius || minY < cy - radius || maxY > cy + radius) {
@@ -392,32 +422,87 @@ function drawAlignmentGuide(results) {
             alignMsg = "Perfect! Hold still...";
             isAligned = true;
         }
+        // --- 3. Landmark dots (drawn AFTER vignette) ---
+        ctx.fillStyle = "rgba(125, 179, 230, 0.2)";
+        for (let i = 0; i < landmarks.length; i++) {
+            const lx = landmarks[i].x * w;
+            const ly = landmarks[i].y * h;
+            ctx.beginPath();
+            ctx.arc(lx, ly, 2.0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // --- 4. ROI polygons (drawn AFTER vignette) ---
+        ROI_DEFINITIONS.forEach(roi => {
+            const points = roi.indices
+                .filter(idx => idx < landmarks.length)
+                .map(idx => ({
+                    x: landmarks[idx].x * w,
+                    y: landmarks[idx].y * h
+                }));
+
+            if (points.length < 3) return;
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+            ctx.closePath();
+            ctx.fillStyle = roi.color;
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+            ctx.closePath();
+            ctx.strokeStyle = roi.stroke;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+        });
     }
-    
+
+    // --- 5. Alignment ring ---
+    const color = isAligned ? "#34d399" : "#f87171";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // --- 6. Status text ---
+    ctx.fillStyle = color;
+    ctx.font = "bold 16px Inter, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(isRecording ? "RECORDING: Please do not move" : alignMsg, 20, 40);
+
+    if (!isRecording) {
+        dom.btnWebcamAction.disabled = !isAligned;
+    }
+}
+
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
     ctx.fillRect(0, 0, w, h);
-    
+
     ctx.globalCompositeOperation = "destination-out";
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalCompositeOperation = "source-over";
-    
+
     const color = isAligned ? "#34d399" : "#f87171";
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.stroke();
-    
+
     ctx.fillStyle = color;
     ctx.font = "bold 16px Inter, sans-serif";
     ctx.fillText(isRecording ? "RECORDING: Please do not move" : alignMsg, 20, 40);
-    
+
     if (!isRecording) {
         dom.btnWebcamAction.disabled = !isAligned;
     }
-}
+
 
 function stopWebcam() {
     if (animationFrameId) {
@@ -554,10 +639,10 @@ function stopRecording() {
 function renderResults(data) {
     // API returns flat structure — build the shape renderResults expects
     const signal = {
-        bpm:         data.bpm,
-        sqi_score:   data.sqi_score,
-        sqi_level:   data.sqi_level,
-        bvp_signal:  data.bvp_waveform,   // renamed field
+        bpm: data.bpm,
+        sqi_score: data.sqi_score,
+        sqi_level: data.sqi_level,
+        bvp_signal: data.bvp_waveform,   // renamed field
         per_roi_sqi: data.per_roi_sqi,
     };
 
