@@ -36,6 +36,14 @@ let animationFrameId = null;
 let isAligned = false;
 let maskCanvasCtx = null;
 
+// BPM smoothing state
+let bpmHistory = [];
+
+// Live stream config
+const TARGET_FPS = 25;
+const INTERVAL_MS = Math.round(1000 / TARGET_FPS);
+const JPEG_QUALITY = 0.8;
+
 /* ============================================================
    DOM references
    ============================================================ */
@@ -446,6 +454,9 @@ dom.btnWebcamAction.addEventListener("click", () => {
 function startRecording(durationSeconds) {
     if (!webcamStream) return;
 
+    // Reset BPM smoothing history for fresh session
+    bpmHistory = [];
+
     // Connect WebSocket
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/api/live`;
@@ -455,28 +466,33 @@ function startRecording(durationSeconds) {
     liveSocket.onopen = () => {
         console.log("Live processing WebSocket connected.");
 
+        // Send FPS handshake so backend uses the correct sample rate for FFT
+        liveSocket.send(JSON.stringify({ action: "init", fps: TARGET_FPS }));
+
         // Match canvas to video stream resolution
         const videoTrack = webcamStream.getVideoTracks()[0];
         const settings = videoTrack.getSettings();
         extractionCanvas.width = settings.width || 640;
         extractionCanvas.height = settings.height || 480;
 
-        // Extract and send frames at ~10 FPS (100ms interval)
-        // MediaPipe on Python is heavy; 30fps creates a huge queue backlog.
-        // 10 FPS still exceeds the Nyquist rate for cardiac frequencies.
+        // Extract and send frames at TARGET_FPS.
+        // 25 FPS gives CHROM/POS enough temporal density for reliable
+        // chrominance signal reconstruction. JPEG quality 0.8 preserves
+        // the Cb/Cr channels that both algorithms depend on.
         frameExtractInterval = setInterval(() => {
             if (liveSocket.readyState === WebSocket.OPEN) {
                 extractionCtx.drawImage(dom.webcamPreview, 0, 0, extractionCanvas.width, extractionCanvas.height);
-                const frameData = extractionCanvas.toDataURL("image/jpeg", 0.5);
+                const frameData = extractionCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
                 liveSocket.send(JSON.stringify({ frame: frameData }));
             }
-        }, 100);
+        }, INTERVAL_MS);
     };
 
     liveSocket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            // Live-update the dashboard
+            // Apply BPM smoothing before rendering
+            data.bpm = smoothBPM(data.bpm);
             renderResults(data);
 
             if (data.is_final) {
@@ -545,6 +561,37 @@ function stopRecording() {
         showLoading(true);
         // Server will send final result then close
     }
+}
+
+/* ============================================================
+   BPM smoothing
+   ============================================================ */
+
+/**
+ * Rolling median filter with harmonic rejection.
+ *
+ * POS+CHROM can lock onto the 2nd harmonic of the cardiac frequency
+ * when the signal window is short or noisy, producing readings roughly
+ * 2× the true BPM. This filter detects those jumps and clamps them
+ * to the rolling median until enough evidence accumulates.
+ *
+ * @param {number|null} rawBpm - Raw BPM from the latest server result.
+ * @returns {number|null} Smoothed BPM value.
+ */
+function smoothBPM(rawBpm) {
+    if (rawBpm == null) return rawBpm;
+
+    bpmHistory.push(rawBpm);
+    if (bpmHistory.length > 5) bpmHistory.shift();
+
+    const sorted = [...bpmHistory].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    // Reject if >25 BPM from rolling median — likely a harmonic artifact
+    if (bpmHistory.length >= 3 && Math.abs(rawBpm - median) > 25) {
+        return median;
+    }
+    return rawBpm;
 }
 
 /* ============================================================
