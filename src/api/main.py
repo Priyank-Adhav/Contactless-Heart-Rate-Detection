@@ -114,32 +114,33 @@ def _run_analysis_on_roi(roi_result, video_path: str = None) -> dict:
 
     # --- Stage 3: SQI gate + Triage Decision Agent ---
     # TWIST 1: When SQI is LOW, switch to Visual Assessment Mode
+    # Uses Gemini Vision API (if key available) or OpenCV heuristics
     if signal_result.sqi_level == "LOW":
-        if video_path is not None:
-            logger.info("SQI is LOW — Triage Decision Agent switching to Visual Assessment Mode")
-            try:
-                from src.visual_assessor import assess_visual_distress
-                visual = assess_visual_distress(video_path)
-            except Exception as e:
-                logger.error("Visual assessment failed: %s", e)
-                visual = {
-                    "visual_stress_score": 0.5,
-                    "visual_stress_level": "UNKNOWN",
-                    "pallor": {"pallor_score": 0.5, "detail": "Assessment unavailable"},
-                    "breathing": {"breathing_rate": None, "breathing_score": 0.5, "detail": "Assessment unavailable"},
-                    "motion": {"motion_score": 0.5, "detail": "Assessment unavailable"},
-                    "details": [f"Visual assessment error: {e}"],
-                }
-        else:
-            logger.info("SQI is LOW but no video file available — skipping Visual Assessment Mode")
+        logger.info("SQI is LOW — Triage Decision Agent switching to Visual Assessment Mode")
+        try:
+            from src.visual_assessor import assess_visual_distress
+            visual = assess_visual_distress(video_path)
+        except Exception as e:
+            logger.error("Visual assessment failed: %s", e)
             visual = {
-                "visual_stress_score": 0.5,
+                "visual_stress_score": 5.0,
                 "visual_stress_level": "UNKNOWN",
-                "pallor": {"pallor_score": 0.5, "detail": "Live mode - assessment unavailable"},
-                "breathing": {"breathing_rate": None, "breathing_score": 0.5, "detail": "Live mode - assessment unavailable"},
-                "motion": {"motion_score": 0.5, "detail": "Live mode - assessment unavailable"},
-                "details": ["Visual assessment not available in live mode"],
+                "confidence": 0.1,
+                "analysis_method": "error",
+                "indicators": {
+                    "pallor": {"score": 5, "description": "Assessment unavailable"},
+                    "sweating": {"score": 5, "description": "Assessment unavailable"},
+                    "cyanosis": {"score": 5, "description": "Assessment unavailable"},
+                    "breathing": {"score": 5, "description": "Assessment unavailable"},
+                    "facial_distress": {"score": 5, "description": "Assessment unavailable"},
+                },
+                "overall_assessment": f"Visual assessment error: {e}",
+                "recommended_action": "Retry with better conditions",
+                "details": [f"Visual assessment error: {e}"],
             }
+
+        # Map visual_stress_level to stress_level format
+        vs_level = visual.get("visual_stress_level", "UNKNOWN")
 
         return {
             "bpm": None,
@@ -148,14 +149,15 @@ def _run_analysis_on_roi(roi_result, video_path: str = None) -> dict:
             "per_roi_sqi": signal_result.per_roi_sqi,
             "bvp_waveform": signal_result.bvp_signal[:500],
             "hrv": None,
-            "stress_level": visual["visual_stress_level"],
-            "stress_confidence": visual["visual_stress_score"],
+            "stress_level": vs_level,
+            "stress_confidence": visual.get("confidence", 0.5),
             "active_mode": "visual_assessment",
-            "mode_reason": "rPPG signal quality below confidence threshold — switched to visual analysis",
+            "mode_reason": "rPPG signal quality below confidence threshold — switched to Gemini-powered visual triage",
+            "analysis_method": visual.get("analysis_method", "unknown"),
             "visual_assessment": visual,
             "warnings": [
                 "Biometric mode unavailable — signal quality too low.",
-                "Visual Assessment Mode activated: analyzing physical distress indicators.",
+                f"Visual Assessment Mode activated ({visual.get('analysis_method', 'unknown')}).",
             ] + visual.get("details", []),
         }
 
@@ -316,7 +318,7 @@ def _placeholder_signal_result(roi_result):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/analyze")
-async def analyze_video(video: UploadFile = File(...)):
+async def analyze_video(video: UploadFile = File(...), force_visual: bool = False):
     """Accept a video file upload and run the full analysis pipeline.
 
     Args:
@@ -353,6 +355,35 @@ async def analyze_video(video: UploadFile = File(...)):
 
     try:
         start_time = time.time()
+
+        # Manual visual assessment mode — skip biometric pipeline
+        if force_visual:
+            logger.info("Force visual assessment requested — skipping biometric pipeline")
+            from src.visual_assessor import assess_visual_distress
+            visual = assess_visual_distress(tmp_path)
+            vs_level = visual.get("visual_stress_level", "UNKNOWN")
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            result = {
+                "bpm": None,
+                "sqi_score": 0,
+                "sqi_level": "N/A",
+                "per_roi_sqi": [],
+                "bvp_waveform": [],
+                "hrv": None,
+                "stress_level": vs_level,
+                "stress_confidence": visual.get("confidence", 0.5),
+                "active_mode": "visual_assessment",
+                "mode_reason": "Manual visual assessment mode — Gemini AI analyzing physical distress indicators",
+                "analysis_method": visual.get("analysis_method", "unknown"),
+                "visual_assessment": visual,
+                "processing_time_ms": round(elapsed_ms, 1),
+                "warnings": [
+                    f"Visual Assessment Mode ({visual.get('analysis_method', 'unknown')})",
+                ] + visual.get("details", []),
+            }
+            return JSONResponse(content=result)
+
         result = run_pipeline(tmp_path)
         elapsed_ms = (time.time() - start_time) * 1000
         result["processing_time_ms"] = round(elapsed_ms, 1)
