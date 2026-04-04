@@ -121,34 +121,88 @@ export default function ResultsScreen({ navigation, route }) {
           </View>
         )}
 
-        {/* Visual Assessment Card — TWIST 1 */}
+        {/* Visual Assessment Card — TWIST 1 (Gemini Vision) */}
         {isVisualMode && visual && (
           <View style={styles.visualCard}>
-            <Text style={styles.sectionTitle}>VISUAL DISTRESS ANALYSIS</Text>
-            <View style={styles.visualScore}>
-              <Text style={styles.visualScoreNum}>
-                {Math.round(visual.visual_stress_score * 100)}
-              </Text>
-              <Text style={styles.visualScoreLabel}>Visual Stress Score</Text>
+            <View style={styles.visualHeader}>
+              <Text style={styles.sectionTitle}>VISUAL DISTRESS ANALYSIS</Text>
+              <View style={styles.methodBadge}>
+                <Text style={styles.methodText}>
+                  {visual.analysis_method === 'gemini_vision' ? 'Gemini AI' : 'Heuristic'}
+                </Text>
+              </View>
             </View>
+
+            {/* Score + Urgency Row */}
+            <View style={styles.visualScoreRow}>
+              <View style={styles.visualScore}>
+                <Text style={styles.visualScoreNum}>
+                  {visual.visual_stress_score || 0}
+                </Text>
+                <Text style={styles.visualScoreLabel}>/ 10</Text>
+              </View>
+              {visual.urgency && (
+                <View style={[styles.urgencyBadge, {
+                  backgroundColor: visual.urgency === 'CRITICAL' || visual.urgency === 'HIGH'
+                    ? colors.statusRedBg : visual.urgency === 'MODERATE'
+                    ? colors.statusYellowBg : colors.statusGreenBg,
+                }]}>
+                  <Text style={[styles.urgencyText, {
+                    color: visual.urgency === 'CRITICAL' || visual.urgency === 'HIGH'
+                      ? colors.statusRed : visual.urgency === 'MODERATE'
+                      ? colors.statusYellow : colors.statusGreen,
+                  }]}>{visual.urgency}</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Estimated HR */}
+            {visual.estimated_heart_rate_range ? (
+              <View style={styles.estHrBox}>
+                <Text style={styles.estHrLabel}>Estimated Heart Rate</Text>
+                <Text style={styles.estHrValue}>{visual.estimated_heart_rate_range}</Text>
+              </View>
+            ) : null}
+
+            {/* Overall Assessment */}
+            {visual.overall_assessment ? (
+              <Text style={styles.visualAssessment}>{visual.overall_assessment}</Text>
+            ) : null}
+
+            {/* Recommendation */}
+            {visual.recommended_action ? (
+              <View style={styles.vmRecommend}>
+                <Text style={styles.vmRecommendLabel}>Recommendation</Text>
+                <Text style={styles.vmRecommendText}>{visual.recommended_action}</Text>
+              </View>
+            ) : null}
+
+            {/* 5 Clinical Indicators */}
+            <Text style={[styles.sectionTitle, { marginTop: 8 }]}>CLINICAL INDICATORS</Text>
             <View style={styles.visualGrid}>
-              <VisualMetric
-                label="Pallor"
-                score={visual.pallor?.pallor_score}
-                detail={visual.pallor?.detail}
-              />
-              <VisualMetric
-                label="Breathing"
-                score={visual.breathing?.breathing_score}
-                detail={visual.breathing?.detail}
-                extra={visual.breathing?.breathing_rate ? `${visual.breathing.breathing_rate}/min` : null}
-              />
-              <VisualMetric
-                label="Motion"
-                score={visual.motion?.motion_score}
-                detail={visual.motion?.detail}
-              />
+              {['pallor', 'sweating', 'cyanosis', 'breathing', 'facial_distress'].map(key => {
+                const ind = visual.indicators?.[key];
+                if (!ind) return null;
+                const label = key.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+                return (
+                  <VisualIndicator key={key} label={label} score={ind.score}
+                    description={ind.description} />
+                );
+              })}
             </View>
+
+            {/* Wellness Tips */}
+            {visual.wellness_tips && visual.wellness_tips.length > 0 && (
+              <View style={styles.tipsSection}>
+                <Text style={[styles.sectionTitle, { marginBottom: 8 }]}>WELLNESS RECOMMENDATIONS</Text>
+                {visual.wellness_tips.map((tip, i) => (
+                  <View key={i} style={styles.tipRow}>
+                    <View style={styles.tipBullet} />
+                    <Text style={styles.tipText}>{tip}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         )}
 
@@ -202,16 +256,6 @@ export default function ResultsScreen({ navigation, route }) {
         {/* Stress */}
         <StressCard level={result.stress_level} confidence={result.stress_confidence} />
 
-        {/* Warnings */}
-        {result.warnings?.length > 0 && (
-          <View style={styles.warnBox}>
-            <Text style={styles.warnTitle}>Notes</Text>
-            {result.warnings.map((w, i) => (
-              <Text key={i} style={styles.warnText}>- {w}</Text>
-            ))}
-          </View>
-        )}
-
         <Text style={styles.meta}>
           Processed in {((result.processing_time_ms || 0) / 1000).toFixed(1)} seconds
         </Text>
@@ -238,19 +282,22 @@ function MetricCard({ label, value, unit }) {
   );
 }
 
-function VisualMetric({ label, score, detail, extra }) {
-  const barColor = score > 0.6 ? colors.statusRed : score > 0.35 ? colors.statusYellow : colors.statusGreen;
+function VisualIndicator({ label, score, description }) {
+  const s = score || 0;
+  const barColor = s >= 6 ? colors.statusRed : s >= 3.5 ? colors.statusYellow : colors.statusGreen;
   return (
     <View style={styles.visualMetric}>
-      <Text style={styles.vmLabel}>{label}</Text>
-      {extra && <Text style={styles.vmExtra}>{extra}</Text>}
+      <View style={styles.vmRow}>
+        <Text style={styles.vmLabel}>{label}</Text>
+        <Text style={[styles.vmScore, { color: barColor }]}>{s}/10</Text>
+      </View>
       <View style={styles.vmBar}>
         <View style={[styles.vmBarFill, {
-          width: `${Math.round((score || 0) * 100)}%`,
+          width: `${Math.round(s * 10)}%`,
           backgroundColor: barColor,
         }]} />
       </View>
-      <Text style={styles.vmDetail}>{detail}</Text>
+      <Text style={styles.vmDetail}>{description}</Text>
     </View>
   );
 }
@@ -325,16 +372,39 @@ const styles = StyleSheet.create({
     borderColor: colors.borderPurple, padding: 20, marginBottom: 14,
     ...Platform.select({ ios: { shadowColor: colors.purple, shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
       android: { elevation: 4 } }) },
-  visualScore: { alignItems: 'center', marginBottom: 16 },
-  visualScoreNum: { fontSize: 48, fontWeight: '800', color: colors.purple },
-  visualScoreLabel: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
+  visualHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  methodBadge: { backgroundColor: 'rgba(126,87,194,0.1)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  methodText: { fontSize: 10, fontWeight: '700', color: colors.purple, letterSpacing: 0.3 },
+  visualScoreRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  visualScore: { alignItems: 'center' },
+  visualScoreNum: { fontSize: 52, fontWeight: '800', color: colors.purple },
+  visualScoreLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
+  urgencyBadge: { marginLeft: 16, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 },
+  urgencyText: { fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+  estHrBox: { backgroundColor: 'rgba(126,87,194,0.05)', borderRadius: 12, padding: 12, marginBottom: 12,
+    alignItems: 'center', borderWidth: 1, borderColor: colors.borderPurple },
+  estHrLabel: { fontSize: 10, fontWeight: '600', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  estHrValue: { fontSize: 20, fontWeight: '800', color: colors.purple, marginTop: 2 },
+  visualAssessment: { fontSize: 13, color: colors.textPrimary, textAlign: 'center',
+    lineHeight: 20, marginBottom: 12, fontStyle: 'italic', paddingHorizontal: 4 },
+  vmRecommend: { backgroundColor: 'rgba(46,125,50,0.06)', borderRadius: 12,
+    padding: 14, marginBottom: 14, borderWidth: 1, borderColor: colors.borderGreen },
+  vmRecommendLabel: { fontSize: 10, fontWeight: '700', color: colors.green, textTransform: 'uppercase',
+    letterSpacing: 0.5, marginBottom: 4 },
+  vmRecommendText: { fontSize: 13, color: colors.green, fontWeight: '500', lineHeight: 19 },
   visualGrid: {},
-  visualMetric: { marginBottom: 14 },
-  vmLabel: { fontSize: 13, fontWeight: '700', color: colors.textPrimary, marginBottom: 2 },
-  vmExtra: { fontSize: 12, color: colors.purple, fontWeight: '600', marginBottom: 2 },
+  visualMetric: { marginBottom: 12 },
+  vmRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  vmLabel: { fontSize: 13, fontWeight: '700', color: colors.textPrimary },
+  vmScore: { fontSize: 12, fontWeight: '700' },
   vmBar: { height: 6, borderRadius: 3, backgroundColor: 'rgba(0,0,0,0.06)', marginBottom: 4, overflow: 'hidden' },
   vmBarFill: { height: 6, borderRadius: 3 },
-  vmDetail: { fontSize: 11, color: colors.textSecondary },
+  vmDetail: { fontSize: 11, color: colors.textSecondary, lineHeight: 16 },
+  tipsSection: { marginTop: 8, backgroundColor: 'rgba(46,125,50,0.03)', borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: colors.borderGreen },
+  tipRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
+  tipBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.green, marginRight: 10, marginTop: 5 },
+  tipText: { flex: 1, fontSize: 12, color: colors.textPrimary, lineHeight: 17 },
 
   // Cards
   card: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.border,
