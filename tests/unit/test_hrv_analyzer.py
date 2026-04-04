@@ -50,7 +50,16 @@ class TestIBIComputation:
 
 
 class TestIBICleaning:
-    """Tests for artifact rejection on IBI arrays."""
+    """Tests for artifact rejection on IBI arrays.
+
+    The artifact rejection threshold is 45% (max_change_pct=0.45).
+    This is intentionally more permissive than the classical ECG value
+    of 30%, because rPPG peak detection has ±1-2 sample jitter that
+    produces natural IBI variance of 5-15% at typical heart rates.
+    True artifacts (missed/double beats) produce changes of 80-100%
+    and are still caught; the absolute bounds filter [300, 1500] ms
+    handles the rest.
+    """
 
     def test_removes_too_short_ibi(self):
         """IBI below 300 ms (>200 BPM) should be removed."""
@@ -64,12 +73,32 @@ class TestIBICleaning:
         cleaned = clean_ibi(ibi)
         assert 2000.0 not in cleaned
 
-    def test_removes_large_jump(self):
-        """IBI that jumps >30% from previous should be removed."""
-        # 800 → 1100 is a 37.5% jump → should be rejected
+    def test_removes_true_artifact_large_jump(self):
+        """IBI that jumps >45% from previous (missed beat) should be removed.
+
+        800 → 1450 ms is an 81% jump, well above the 45% threshold.
+        This represents a genuinely missed beat, not rPPG jitter.
+        """
+        ibi = [800.0, 820.0, 1450.0, 810.0]
+        cleaned = clean_ibi(ibi)
+        assert 1450.0 not in cleaned, (
+            "An 81% IBI jump should be rejected as a missed-beat artifact"
+        )
+
+    def test_preserves_moderate_jump_within_threshold(self):
+        """IBI jump of ~37% should be retained under the 45% threshold.
+
+        800 → 1100 ms is a 37.5% change. Under the old 30% threshold
+        this was rejected, but rPPG jitter at typical frame rates can
+        produce legitimate variance in this range. The new 45% threshold
+        retains these beats to ensure sufficient IBIs reach HRV computation.
+        """
         ibi = [800.0, 820.0, 1100.0, 810.0]
         cleaned = clean_ibi(ibi)
-        assert 1100.0 not in cleaned
+        assert 1100.0 in cleaned, (
+            "A 37.5% IBI change is within the 45% rPPG jitter tolerance "
+            "and should not be rejected"
+        )
 
     def test_preserves_valid_ibi(self):
         """All-valid IBIs should pass through unchanged."""
