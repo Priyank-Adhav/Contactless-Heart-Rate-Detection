@@ -51,7 +51,10 @@ def classify_stress(hrv: HRVResult) -> Tuple[str, float, List[str]]:
 
 
 # ✅ ML-BASED (YOUR NEW FEATURE)
-def classify_stress_ml(hrv: HRVResult) -> Tuple[str, float, List[str]]:
+def classify_stress_ml(
+    hrv: HRVResult,
+    model_path: str = "models/stress_classifier.pkl"
+) -> Tuple[str, float, List[str]]:
     """
     ML-based stress classification (fallback-safe)
     """
@@ -59,7 +62,7 @@ def classify_stress_ml(hrv: HRVResult) -> Tuple[str, float, List[str]]:
     try:
         print("🔥 USING ML MODEL 🔥")
 
-        model = joblib.load("models/stress_classifier.pkl")
+        model = joblib.load(model_path)
 
         features = pd.DataFrame([{
             'hr': hrv.mean_hr,
