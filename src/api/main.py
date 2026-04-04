@@ -93,30 +93,37 @@ def _run_analysis_on_roi(roi_result, video_path: str = None) -> dict:
     """
     warnings = []
 
-    if not roi_result.face_detected:
-        return _error_response(
-            warnings=["No face detected in the video."],
-        )
+    needs_visual_fallback = False
+    fallback_reason = ""
+    signal_result = None
 
-    # --- Stage 2: Signal processing + ensemble fusion ---
-    try:
-        from src.signal_processor import process_signals
-        signal_result = process_signals(roi_result)
-    except ImportError:
-        logger.warning("signal_processor not yet implemented, using placeholder")
-        signal_result = _placeholder_signal_result(roi_result)
-        warnings.append("Signal processing module not yet available; showing placeholder data.")
-    except Exception as e:
-        logger.error("Signal processing failed: %s", e)
-        return _error_response(
-            warnings=[f"Signal processing failed: {e}"],
-        )
+    if not roi_result.face_detected:
+        needs_visual_fallback = True
+        fallback_reason = "No face detected in video (poor lighting/occlusion) — switched to Gemini-powered visual triage"
+        logger.info(fallback_reason)
+    else:
+        # --- Stage 2: Signal processing + ensemble fusion ---
+        try:
+            from src.signal_processor import process_signals
+            signal_result = process_signals(roi_result)
+        except ImportError:
+            logger.warning("signal_processor not yet implemented, using placeholder")
+            signal_result = _placeholder_signal_result(roi_result)
+            warnings.append("Signal processing module not yet available; showing placeholder data.")
+        except Exception as e:
+            logger.error("Signal processing failed: %s", e)
+            return _error_response(
+                warnings=[f"Signal processing failed: {e}"],
+            )
+
+        if signal_result.sqi_level == "LOW":
+            needs_visual_fallback = True
+            fallback_reason = "rPPG signal quality below confidence threshold — switched to Gemini-powered visual triage"
+            logger.info("SQI is LOW — Triage Decision Agent switching to Visual Assessment Mode")
 
     # --- Stage 3: SQI gate + Triage Decision Agent ---
-    # TWIST 1: When SQI is LOW, switch to Visual Assessment Mode
-    # Uses Gemini Vision API (if key available) or OpenCV heuristics
-    if signal_result.sqi_level == "LOW":
-        logger.info("SQI is LOW — Triage Decision Agent switching to Visual Assessment Mode")
+    # TWIST 1: When SQI is LOW or no face detected, switch to Visual Assessment Mode
+    if needs_visual_fallback:
         try:
             from src.visual_assessor import assess_visual_distress
             visual = assess_visual_distress(video_path)
@@ -144,19 +151,19 @@ def _run_analysis_on_roi(roi_result, video_path: str = None) -> dict:
 
         return {
             "bpm": None,
-            "sqi_score": signal_result.sqi_score,
-            "sqi_level": signal_result.sqi_level,
-            "per_roi_sqi": signal_result.per_roi_sqi,
-            "bvp_waveform": signal_result.bvp_signal[:500],
+            "sqi_score": signal_result.sqi_score if signal_result else 0.0,
+            "sqi_level": signal_result.sqi_level if signal_result else "LOW",
+            "per_roi_sqi": signal_result.per_roi_sqi if signal_result else [0.0, 0.0, 0.0],
+            "bvp_waveform": signal_result.bvp_signal[:500] if signal_result else [],
             "hrv": None,
             "stress_level": vs_level,
             "stress_confidence": visual.get("confidence", 0.5),
             "active_mode": "visual_assessment",
-            "mode_reason": "rPPG signal quality below confidence threshold — switched to Gemini-powered visual triage",
+            "mode_reason": fallback_reason,
             "analysis_method": visual.get("analysis_method", "unknown"),
             "visual_assessment": visual,
             "warnings": [
-                "Biometric mode unavailable — signal quality too low.",
+                "Biometric mode unavailable — signal quality too low or no face detected.",
                 f"Visual Assessment Mode activated ({visual.get('analysis_method', 'unknown')}).",
             ] + visual.get("details", []),
         }
