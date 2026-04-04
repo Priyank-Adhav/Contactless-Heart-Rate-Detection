@@ -180,6 +180,7 @@ def _call_gemini_vision(frame_b64: str, api_key: str) -> dict:
     Includes retry logic for free-tier rate limits (429 errors).
     """
     import time
+
     from google import genai
 
     client = genai.Client(api_key=api_key)
