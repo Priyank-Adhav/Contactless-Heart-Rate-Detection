@@ -26,7 +26,9 @@ export default function App() {
         <Stack.Screen name="Home" component={HomeScreen}
           options={{ headerShown: false }} />
         <Stack.Screen name="Camera" component={CameraScreen}
-          options={{ title: 'Face Scan' }} />
+          options={({ route }) => ({
+            title: route.params?.forceVisual ? 'Visual Assessment' : 'Face Scan',
+          })} />
         <Stack.Screen name="Finger" component={FingerScreen}
           options={{ title: 'Finger Pulse' }} />
         <Stack.Screen name="Results" component={ResultsScreen}
