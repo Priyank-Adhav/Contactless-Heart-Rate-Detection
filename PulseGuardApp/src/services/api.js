@@ -1,5 +1,4 @@
 // PulseGuard API client
-// ⚠️ CHANGE this IP to your computer's local IP (run: hostname -I)
 // The Python backend must be running: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 
 const BASE_URL = 'http://10.23.46.166:8000';
@@ -20,8 +19,10 @@ export async function checkHealth() {
 /**
  * Upload face-scan video → backend runs ROI → Signal → HRV → Stress pipeline
  * Endpoint: POST /api/analyze
+ * @param {string} videoUri - URI to the video file
+ * @param {boolean} forceVisual - If true, skip biometric and use Gemini visual assessment
  */
-export async function analyzeVideo(videoUri) {
+export async function analyzeVideo(videoUri, forceVisual = false) {
   const form = new FormData();
   form.append('video', {
     uri: videoUri,
@@ -29,7 +30,11 @@ export async function analyzeVideo(videoUri) {
     name: 'face_capture.mp4',
   });
 
-  const res = await fetch(`${BASE_URL}/api/analyze`, {
+  const url = forceVisual
+    ? `${BASE_URL}/api/analyze?force_visual=true`
+    : `${BASE_URL}/api/analyze`;
+
+  const res = await fetch(url, {
     method: 'POST',
     body: form,
     headers: { 'Content-Type': 'multipart/form-data' },
