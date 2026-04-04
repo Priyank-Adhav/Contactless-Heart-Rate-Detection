@@ -271,7 +271,7 @@ def _process_frame(landmarker, frame, frame_w, frame_h, timestamp_ms=None):
     return green_values, rgb_values, lm_coords
 
 
-def extract_rois(video_path, model_path=None):
+def extract_rois(video_path, model_path=None, duration_sec=None):
     """Extract multi-ROI green channel signals from a video file.
 
     Processes every frame of the video, detects facial landmarks via
@@ -338,6 +338,10 @@ def extract_rois(video_path, model_path=None):
 
     cap.release()
     landmarker.close()
+
+    if duration_sec is not None and duration_sec > 0:
+        true_fps = frame_count / float(duration_sec)
+        fps = true_fps
 
     warnings = []
     if patient_moved:

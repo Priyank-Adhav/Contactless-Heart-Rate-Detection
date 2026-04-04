@@ -36,14 +36,6 @@ let animationFrameId = null;
 let isAligned = false;
 let maskCanvasCtx = null;
 
-// BPM smoothing state
-let bpmHistory = [];
-
-// Live stream config
-const TARGET_FPS = 25;
-const INTERVAL_MS = Math.round(1000 / TARGET_FPS);
-const JPEG_QUALITY = 0.8;
-
 /* ============================================================
    DOM references
    ============================================================ */
@@ -238,15 +230,15 @@ function formatFileSize(bytes) {
 
 dom.btnAnalyze.addEventListener("click", async () => {
     if (!selectedFile) return;
-    await runAnalysis(selectedFile);
+    await runAnalysis(selectedFile, null);
 });
 
-async function runAnalysis(file) {
+async function runAnalysis(file, explicitDuration) {
     showLoading(true);
     hideWarnings();
 
     try {
-        const data = await analyzeVideo(file);
+        const data = await analyzeVideo(file, explicitDuration);
         renderResults(data);
     } catch (err) {
         showError(err.message || "Analysis failed. Please try again.");
@@ -259,9 +251,14 @@ async function runAnalysis(file) {
    API communication
    ============================================================ */
 
-async function analyzeVideo(file) {
+async function analyzeVideo(file, explicitDuration) {
     const formData = new FormData();
     formData.append("video", file);
+    
+    // Pass perfect duration explicitly from MediaRecorder
+    if (explicitDuration) {
+        formData.append("duration_sec", explicitDuration);
+    }
 
     let response;
     try {
@@ -454,78 +451,44 @@ dom.btnWebcamAction.addEventListener("click", () => {
 function startRecording(durationSeconds) {
     if (!webcamStream) return;
 
-    // Reset BPM smoothing history for fresh session
-    bpmHistory = [];
+    recordedChunks = [];
+    
+    try {
+        // Try high-quality hardware encoding
+        mediaRecorder = new MediaRecorder(webcamStream, { mimeType: 'video/webm' });
+    } catch (e) {
+        // Fallback for Safari
+        mediaRecorder = new MediaRecorder(webcamStream);
+    }
 
-    // Connect WebSocket
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/live`;
-
-    liveSocket = new WebSocket(wsUrl);
-
-    liveSocket.onopen = () => {
-        console.log("Live processing WebSocket connected.");
-
-        // Send FPS handshake so backend uses the correct sample rate for FFT
-        liveSocket.send(JSON.stringify({ action: "init", fps: TARGET_FPS }));
-
-        // Match canvas to video stream resolution
-        const videoTrack = webcamStream.getVideoTracks()[0];
-        const settings = videoTrack.getSettings();
-        extractionCanvas.width = settings.width || 640;
-        extractionCanvas.height = settings.height || 480;
-
-        // Extract and send frames at TARGET_FPS.
-        // 25 FPS gives CHROM/POS enough temporal density for reliable
-        // chrominance signal reconstruction. JPEG quality 0.8 preserves
-        // the Cb/Cr channels that both algorithms depend on.
-        frameExtractInterval = setInterval(() => {
-            if (liveSocket.readyState === WebSocket.OPEN) {
-                extractionCtx.drawImage(dom.webcamPreview, 0, 0, extractionCanvas.width, extractionCanvas.height);
-                const frameData = extractionCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
-                liveSocket.send(JSON.stringify({ frame: frameData }));
-            }
-        }, INTERVAL_MS);
+    mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+            recordedChunks.push(event.data);
+        }
     };
 
-    liveSocket.onmessage = (event) => {
+    mediaRecorder.onstop = async () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const file = new File([blob], "webcam_capture.webm", { type: 'video/webm' });
+        
+        showLoading(true);
         try {
-            const data = JSON.parse(event.data);
-            // Apply BPM smoothing before rendering
-            data.bpm = smoothBPM(data.bpm);
-            renderResults(data);
-
-            if (data.is_final) {
-                liveSocket.close();
-                showLoading(false);
-            }
-        } catch (e) {
-            console.error("Error parsing live data", e);
+            await runAnalysis(file, durationSeconds);
+        } catch (err) {
+            showError("Webcam analysis failed: " + err.message);
+        } finally {
+            showLoading(false);
         }
     };
 
-    liveSocket.onerror = (error) => {
-        console.error("Live processing WebSocket error:", error);
-        showError("Live connection error.");
-        stopRecording();
-    };
-
-    liveSocket.onclose = () => {
-        console.log("Live stream closed.");
-        if (frameExtractInterval) {
-            clearInterval(frameExtractInterval);
-            frameExtractInterval = null;
-        }
-    };
+    mediaRecorder.start();
 
     isRecording = true;
     dom.btnWebcamAction.textContent = "Stop Recording";
     dom.btnWebcamAction.classList.add("recording");
 
-    // UI clean state
     hideWarnings();
 
-    // Countdown
     let remaining = durationSeconds;
     dom.webcamCountdown.textContent = remaining + "s";
     dom.webcamCountdown.classList.add("visible");
@@ -535,7 +498,6 @@ function startRecording(durationSeconds) {
         dom.webcamCountdown.textContent = remaining + "s";
         if (remaining <= 0) {
             stopRecording();
-            showLoading(true);
         }
     }, 1000);
 }
@@ -551,47 +513,10 @@ function stopRecording() {
 
     isRecording = false;
 
-    if (frameExtractInterval) {
-        clearInterval(frameExtractInterval);
-        frameExtractInterval = null;
-    }
-
-    if (liveSocket && liveSocket.readyState === WebSocket.OPEN) {
-        liveSocket.send(JSON.stringify({ action: "stop" }));
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
         showLoading(true);
-        // Server will send final result then close
     }
-}
-
-/* ============================================================
-   BPM smoothing
-   ============================================================ */
-
-/**
- * Rolling median filter with harmonic rejection.
- *
- * POS+CHROM can lock onto the 2nd harmonic of the cardiac frequency
- * when the signal window is short or noisy, producing readings roughly
- * 2× the true BPM. This filter detects those jumps and clamps them
- * to the rolling median until enough evidence accumulates.
- *
- * @param {number|null} rawBpm - Raw BPM from the latest server result.
- * @returns {number|null} Smoothed BPM value.
- */
-function smoothBPM(rawBpm) {
-    if (rawBpm == null) return rawBpm;
-
-    bpmHistory.push(rawBpm);
-    if (bpmHistory.length > 5) bpmHistory.shift();
-
-    const sorted = [...bpmHistory].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-
-    // Reject if >25 BPM from rolling median — likely a harmonic artifact
-    if (bpmHistory.length >= 3 && Math.abs(rawBpm - median) > 25) {
-        return median;
-    }
-    return rawBpm;
 }
 
 /* ============================================================
