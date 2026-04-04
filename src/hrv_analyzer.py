@@ -74,7 +74,7 @@ def clean_ibi(
     ibi_ms: List[float],
     min_ibi: float = 300.0,
     max_ibi: float = 1500.0,
-    max_change_pct: float = 0.3,
+    max_change_pct: float = 0.45,
 ) -> List[float]:
     """Remove physiologically impossible IBI values.
 
@@ -86,15 +86,25 @@ def clean_ibi(
        - 300 ms = 200 BPM  (maximum plausible heart rate)
        - 1500 ms = 40 BPM  (minimum plausible heart rate)
 
-    2. **Relative change**: If an IBI jumps more than 30% from the
-       previous accepted IBI, it's likely a missed/extra beat artifact.
+    2. **Relative change**: If an IBI jumps more than max_change_pct from
+       the previous accepted IBI, it's likely a missed/extra beat artifact.
+
+    The default max_change_pct of 0.45 (45%) is intentionally more
+    permissive than classical HRV literature (which assumes ECG-quality
+    data).  rPPG peak detection has ±1–2 sample jitter at typical frame
+    rates, which at 85 BPM produces natural IBI variance of 5–15%.
+    A threshold of 30% (the classical value) discards too many legitimate
+    beats from the live stream path, leaving too few IBIs for reliable
+    metric computation.  45% retains genuine cardiac variability while
+    still rejecting true artifacts (missed/double beats, which produce
+    changes of 80–100%).
 
     Args:
         ibi_ms: List of raw IBI values in milliseconds.
         min_ibi: Minimum plausible IBI (default 300 ms = 200 BPM).
         max_ibi: Maximum plausible IBI (default 1500 ms = 40 BPM).
         max_change_pct: Maximum allowed fractional change between
-                        consecutive IBIs (default 0.3 = 30%).
+                        consecutive IBIs (default 0.45 = 45%).
 
     Returns:
         Cleaned list of IBI values.  May be shorter than input.
@@ -281,6 +291,8 @@ def compute_hrv(peak_indices: List[int], fps: float) -> Optional[HRVResult]:
     if len(ibi_raw) < 5:
         logger.warning("Insufficient raw IBIs (%d), need at least 5", len(ibi_raw))
         return None
+
+    logger.debug("Raw IBIs (ms): %s", [round(x, 1) for x in ibi_raw])
 
     # Step 2: Clean artifacts
     ibi_clean = clean_ibi(ibi_raw)

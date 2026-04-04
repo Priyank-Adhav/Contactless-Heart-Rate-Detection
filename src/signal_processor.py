@@ -253,6 +253,7 @@ def extract_bpm(bvp_signal: np.ndarray, fps: float,
     logger.debug("FFT candidates: %s → selected %.1f BPM", candidates, bpm)
     return round(float(bpm), 1)
 
+
 # ---------------------------------------------------------------------------
 # Step 5: Peak Detection for IBI
 # ---------------------------------------------------------------------------
@@ -260,12 +261,20 @@ def extract_bpm(bvp_signal: np.ndarray, fps: float,
 def detect_peaks(bvp_signal: np.ndarray, fps: float) -> List[int]:
     """Find peaks in the BVP signal for IBI computation.
 
-    Uses SciPy's find_peaks with adaptive parameters:
-        - min distance: 0.4s between peaks (~150 BPM max)
-        - prominence: 0.3 × signal std (adapts to signal strength)
+    Uses SciPy's find_peaks with parameters tuned for rPPG signals:
 
-    Downstream, Module 04 (HRV) converts these peak positions to
-    inter-beat intervals for HRV metric computation.
+        - min distance: 0.4s between peaks (~150 BPM max physiological rate)
+        - prominence: 0.2 × signal std
+
+    Why 0.2 instead of 0.3?
+    The live WebSocket path produces slightly noisier signals than the
+    batch path because of shorter windows and JPEG compression artifacts
+    in the RGB channels.  This raises the signal's overall std, which
+    makes a 0.3× prominence threshold overly demanding — genuine cardiac
+    peaks close to the noise floor get rejected, leaving too few IBIs for
+    HRV computation.  0.2× retains those genuine peaks while still
+    rejecting pure noise spikes (which are narrow and lack the smooth
+    morphology of a true BVP peak — the distance constraint handles those).
 
     Args:
         bvp_signal: 1D numpy array of the BVP signal.
@@ -277,20 +286,22 @@ def detect_peaks(bvp_signal: np.ndarray, fps: float) -> List[int]:
     if len(bvp_signal) < 3:
         return []
 
-    min_distance = int(fps * 0.4)  # minimum 0.4s between beats
-    prominence = 0.3 * np.std(bvp_signal)
+    min_distance = int(fps * 0.4)  # minimum 0.4s between beats (~150 BPM max)
+    prominence = 0.2 * np.std(bvp_signal)
 
-    # Ensure minimum prominence to avoid detecting noise peaks
+    # Ensure minimum prominence to avoid detecting pure noise
     prominence = max(prominence, 1e-6)
 
-    peaks, _ = find_peaks(
+    peaks, properties = find_peaks(
         bvp_signal,
         distance=max(min_distance, 1),
         prominence=prominence,
     )
 
-    logger.debug("Detected %d peaks in %d samples (%.1f s)",
-                 len(peaks), len(bvp_signal), len(bvp_signal) / fps)
+    logger.debug(
+        "Detected %d peaks in %d samples (%.1f s) at fps=%.1f",
+        len(peaks), len(bvp_signal), len(bvp_signal) / fps, fps,
+    )
 
     return peaks.tolist()
 
@@ -457,9 +468,9 @@ def process_signals(roi_result: ROIResult) -> SignalResult:
 
     logger.info(
         "Signal processing complete: BPM=%s, SQI=%.3f (%s), peaks=%d, "
-        "candidates=%d",
+        "candidates=%d, fps=%.1f",
         f"{bpm:.1f}" if bpm is not None else "suppressed",
-        composite_sqi, sqi_level, len(peaks), len(candidates),
+        composite_sqi, sqi_level, len(peaks), len(candidates), fps,
     )
 
     return SignalResult(
